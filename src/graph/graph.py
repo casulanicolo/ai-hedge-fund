@@ -53,6 +53,9 @@ from langgraph.graph import END, START, StateGraph
 
 from src.graph.state import AgentState
 
+from dotenv import load_dotenv
+load_dotenv()  # carica .env per ANTHROPIC_API_KEY e altri segreti
+
 logger = logging.getLogger(__name__)
 logging.getLogger("yfinance").setLevel(logging.WARNING)
 
@@ -196,6 +199,9 @@ if __name__ == "__main__":
         tickers=["AAPL", "NVDA"],
         start_ts=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
+    # Inject Anthropic model so all agents use the right provider
+    state["metadata"]["model_name"] = "claude-sonnet-4-5"
+    state["metadata"]["model_provider"] = "Anthropic"
 
     result = compiled_graph.invoke(state)
     print("Graph executed successfully.")

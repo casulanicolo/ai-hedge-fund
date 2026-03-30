@@ -1,12 +1,5 @@
-from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-    get_insider_trades,
-    get_company_news,
-    get_prices,
-)
+﻿from src.graph.state import AgentState, show_agent_reasoning
+from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news, get_prices, register_state
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -15,7 +8,6 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 import statistics
-from src.utils.api_key import get_api_key_from_state
 
 class StanleyDruckenmillerSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
@@ -34,16 +26,16 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
     Returns a bullish/bearish/neutral signal with confidence and reasoning.
     """
     data = state["data"]
+    register_state(state)
     start_date = data["start_date"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     analysis_data = {}
     druck_analysis = {}
 
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5, api_key=api_key)
+        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5, api_key=None)
 
         progress.update_status(agent_id, ticker, "Gathering financial line items")
         # Include relevant line items for Stan Druckenmiller's approach:
@@ -72,20 +64,20 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
             end_date,
             period="annual",
             limit=5,
-            api_key=api_key,
+            api_key=None,
         )
 
         progress.update_status(agent_id, ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=api_key)
+        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching company news")
-        company_news = get_company_news(ticker, end_date, limit=50, api_key=api_key)
+        company_news = get_company_news(ticker, end_date, limit=50, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching recent price data for momentum")
-        prices = get_prices(ticker, start_date=start_date, end_date=end_date, api_key=api_key)
+        prices = get_prices(ticker, start_date=start_date, end_date=end_date, api_key=None)
 
         progress.update_status(agent_id, ticker, "Analyzing growth & momentum")
         growth_momentum_analysis = analyze_growth_and_momentum(financial_line_items, prices)
@@ -174,7 +166,7 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
         return {"score": 0, "details": "Insufficient financial data for growth analysis"}
 
     details = []
-    raw_score = 0  # We'll sum up a maximum of 9 raw points, then scale to 0–10
+    raw_score = 0  # We'll sum up a maximum of 9 raw points, then scale to 0â€“10
 
     #
     # 1. Revenue Growth (annualized CAGR)
@@ -264,7 +256,7 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
     # We assigned up to 3 points each for:
     #   revenue growth, eps growth, momentum
     # => max raw_score = 9
-    # Scale to 0–10
+    # Scale to 0â€“10
     final_score = min(10, (raw_score / 9) * 10)
 
     return {"score": final_score, "details": "; ".join(details)}
@@ -417,7 +409,7 @@ def analyze_risk_reward(financial_line_items: list, prices: list) -> dict:
     else:
         details.append("Not enough price data for volatility analysis.")
 
-    # raw_score out of 6 => scale to 0–10
+    # raw_score out of 6 => scale to 0â€“10
     final_score = min(10, (raw_score / 6) * 10)
     return {"score": final_score, "details": "; ".join(details)}
 
@@ -429,7 +421,7 @@ def analyze_druckenmiller_valuation(financial_line_items: list, market_cap: floa
       - P/FCF
       - EV/EBIT
       - EV/EBITDA
-    Each can yield up to 2 points => max 8 raw points => scale to 0–10.
+    Each can yield up to 2 points => max 8 raw points => scale to 0â€“10.
     """
     if not financial_line_items or market_cap is None:
         return {"score": 0, "details": "Insufficient data to perform valuation"}
@@ -520,7 +512,7 @@ def analyze_druckenmiller_valuation(financial_line_items: list, market_cap: floa
         details.append("No valid EV/EBITDA because EV <= 0 or EBITDA <= 0")
 
     # We have up to 2 points for each of the 4 metrics => 8 raw points max
-    # Scale raw_score to 0–10
+    # Scale raw_score to 0â€“10
     final_score = min(10, (raw_score / 8) * 10)
 
     return {"score": final_score, "details": "; ".join(details)}
@@ -600,3 +592,5 @@ def generate_druckenmiller_output(
         state=state,
         default_factory=create_default_signal,
     )
+
+

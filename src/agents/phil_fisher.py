@@ -1,10 +1,5 @@
-from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import (
-    get_market_cap,
-    search_line_items,
-    get_insider_trades,
-    get_company_news,
-)
+﻿from src.graph.state import AgentState, show_agent_reasoning
+from src.tools.api_shim import get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -13,7 +8,6 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 import statistics
-from src.utils.api_key import get_api_key_from_state
 
 class PhilFisherSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
@@ -34,9 +28,9 @@ def phil_fisher_agent(state: AgentState, agent_id: str = "phil_fisher_agent"):
     Returns a bullish/bearish/neutral signal with confidence and reasoning.
     """
     data = state["data"]
+    register_state(state)
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     analysis_data = {}
     fisher_analysis = {}
 
@@ -67,17 +61,17 @@ def phil_fisher_agent(state: AgentState, agent_id: str = "phil_fisher_agent"):
             end_date,
             period="annual",
             limit=5,
-            api_key=api_key,
+            api_key=None,
         )
 
         progress.update_status(agent_id, ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=api_key)
+        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching company news")
-        company_news = get_company_news(ticker, end_date, limit=50, api_key=api_key)
+        company_news = get_company_news(ticker, end_date, limit=50, api_key=None)
 
         progress.update_status(agent_id, ticker, "Analyzing growth & quality")
         growth_quality = analyze_fisher_growth_quality(financial_line_items)
@@ -178,7 +172,7 @@ def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
         }
 
     details = []
-    raw_score = 0  # up to 9 raw points => scale to 0–10
+    raw_score = 0  # up to 9 raw points => scale to 0â€“10
 
     # 1. Revenue Growth (annualized CAGR)
     revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
@@ -254,7 +248,7 @@ def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
     else:
         details.append("Insufficient R&D data to evaluate")
 
-    # scale raw_score (max 9) to 0–10
+    # scale raw_score (max 9) to 0â€“10
     final_score = min(10, (raw_score / 9) * 10)
     return {"score": final_score, "details": "; ".join(details)}
 
@@ -339,7 +333,7 @@ def analyze_management_efficiency_leverage(financial_line_items: list) -> dict:
         }
 
     details = []
-    raw_score = 0  # up to 6 => scale to 0–10
+    raw_score = 0  # up to 6 => scale to 0â€“10
 
     # 1. Return on Equity (ROE)
     ni_values = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
@@ -407,7 +401,7 @@ def analyze_fisher_valuation(financial_line_items: list, market_cap: float | Non
       - P/E
       - P/FCF
       - (Optionally) Enterprise Value metrics, but simpler approach is typical
-    We will grant up to 2 points for each of two metrics => max 4 raw => scale to 0–10.
+    We will grant up to 2 points for each of two metrics => max 4 raw => scale to 0â€“10.
     """
     if not financial_line_items or market_cap is None:
         return {"score": 0, "details": "Insufficient data to perform valuation"}
@@ -453,7 +447,7 @@ def analyze_fisher_valuation(financial_line_items: list, market_cap: float | Non
     else:
         details.append("No positive free cash flow for P/FCF calculation")
 
-    # scale raw_score (max 4) to 0–10
+    # scale raw_score (max 4) to 0â€“10
     final_score = min(10, (raw_score / 4) * 10)
     return {"score": final_score, "details": "; ".join(details)}
 
@@ -601,3 +595,5 @@ def generate_fisher_output(
         agent_name=agent_id,
         default_factory=create_default_signal,
     )
+
+

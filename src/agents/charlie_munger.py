@@ -1,5 +1,5 @@
-from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news
+﻿from src.graph.state import AgentState, show_agent_reasoning
+from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -7,7 +7,6 @@ import json
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
-from src.utils.api_key import get_api_key_from_state
 
 class CharlieMungerSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
@@ -21,15 +20,15 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
     Focuses on moat strength, management quality, predictability, and valuation.
     """
     data = state["data"]
+    register_state(state)
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     analysis_data = {}
     munger_analysis = {}
     
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10, api_key=api_key)  # Munger looks at longer periods
+        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10, api_key=None)  # Munger looks at longer periods
         
         progress.update_status(agent_id, ticker, "Gathering financial line items")
         financial_line_items = search_line_items(
@@ -53,11 +52,11 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
             end_date,
             period="annual",
             limit=10,  # Munger examines long-term trends
-            api_key=api_key,
+            api_key=None,
         )
         
         progress.update_status(agent_id, ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
         
         progress.update_status(agent_id, ticker, "Fetching insider trades")
         # Munger values management with skin in the game
@@ -65,7 +64,7 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
             ticker,
             end_date,
             limit=100,
-            api_key=api_key,
+            api_key=None,
         )
         
         progress.update_status(agent_id, ticker, "Fetching company news")
@@ -74,7 +73,7 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
             ticker,
             end_date,
             limit=10,
-            api_key=api_key,
+            api_key=None,
         )
         
         progress.update_status(agent_id, ticker, "Analyzing moat strength")
@@ -655,7 +654,7 @@ def calculate_munger_valuation(financial_line_items: list, market_cap: float) ->
     # 4. Calculate simple intrinsic value range
     # Munger tends to use straightforward valuations, avoiding complex DCF models
     conservative_value = normalized_fcf * 10  # 10x FCF = 10% yield
-    reasonable_value = normalized_fcf * 15    # 15x FCF ≈ 6.7% yield
+    reasonable_value = normalized_fcf * 15    # 15x FCF â‰ˆ 6.7% yield
     optimistic_value = normalized_fcf * 20    # 20x FCF = 5% yield
     
     # 5. Calculate margins of safety
@@ -786,7 +785,7 @@ def compute_confidence(analysis: dict, signal: str) -> int:
     quality = 0.35 * moat + 0.25 * mgmt + 0.25 * pred  # 0..8.5
     quality_pct = 100 * (quality / 8.5) if quality > 0 else 0  # 0..100
 
-    # Valuation bump from MOS vs “reasonable”
+    # Valuation bump from MOS vs â€œreasonableâ€
     mos = (analysis.get("valuation_analysis") or {}).get("margin_of_safety_vs_fair_value")
     mos = float(mos) if mos is not None else 0.0
     # Convert MOS into a bounded +/-10pp adjustment
@@ -854,3 +853,5 @@ def generate_munger_output(
         state=state,
         default_factory=_default,
     )
+
+

@@ -1,10 +1,5 @@
-from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import (
-    get_market_cap,
-    search_line_items,
-    get_insider_trades,
-    get_company_news,
-)
+﻿from src.graph.state import AgentState, show_agent_reasoning
+from src.tools.api_shim import get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -12,7 +7,6 @@ import json
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
-from src.utils.api_key import get_api_key_from_state
 
 
 class PeterLynchSignal(BaseModel):
@@ -36,13 +30,13 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
       - If fundamentals strongly align with GARP, be more aggressive.
 
     The result is a bullish/bearish/neutral signal, along with a
-    confidence (0–100) and a textual reasoning explanation.
+    confidence (0â€“100) and a textual reasoning explanation.
     """
 
     data = state["data"]
+    register_state(state)
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     analysis_data = {}
     lynch_analysis = {}
 
@@ -68,17 +62,17 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
             end_date,
             period="annual",
             limit=5,
-            api_key=api_key,
+            api_key=None,
         )
 
         progress.update_status(agent_id, ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=api_key)
+        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching company news")
-        company_news = get_company_news(ticker, end_date, limit=50, api_key=api_key)
+        company_news = get_company_news(ticker, end_date, limit=50, api_key=None)
 
         # Perform sub-analyses:
         progress.update_status(agent_id, ticker, "Analyzing growth")
@@ -170,7 +164,7 @@ def analyze_lynch_growth(financial_line_items: list) -> dict:
         return {"score": 0, "details": "Insufficient financial data for growth analysis"}
 
     details = []
-    raw_score = 0  # We'll sum up points, then scale to 0–10 eventually
+    raw_score = 0  # We'll sum up points, then scale to 0â€“10 eventually
 
     # 1) Revenue Growth
     revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
@@ -218,7 +212,7 @@ def analyze_lynch_growth(financial_line_items: list) -> dict:
     else:
         details.append("Not enough EPS data for growth calculation.")
 
-    # raw_score can be up to 6 => scale to 0–10
+    # raw_score can be up to 6 => scale to 0â€“10
     final_score = min(10, (raw_score / 6) * 10)
     return {"score": final_score, "details": "; ".join(details)}
 
@@ -235,7 +229,7 @@ def analyze_lynch_fundamentals(financial_line_items: list) -> dict:
         return {"score": 0, "details": "Insufficient fundamentals data"}
 
     details = []
-    raw_score = 0  # We'll accumulate up to 6 points, then scale to 0–10
+    raw_score = 0  # We'll accumulate up to 6 points, then scale to 0â€“10
 
     # 1) Debt-to-Equity
     debt_values = [fi.total_debt for fi in financial_line_items if fi.total_debt is not None]
@@ -281,7 +275,7 @@ def analyze_lynch_fundamentals(financial_line_items: list) -> dict:
     else:
         details.append("No free cash flow data available.")
 
-    # raw_score up to 6 => scale to 0–10
+    # raw_score up to 6 => scale to 0â€“10
     final_score = min(10, (raw_score / 6) * 10)
     return {"score": final_score, "details": "; ".join(details)}
 
@@ -478,7 +472,7 @@ def generate_lynch_output(
             ),
             (
                 "human",
-                """Based on the following analysis data for {ticker}, produce your Peter Lynch–style investment signal.
+                """Based on the following analysis data for {ticker}, produce your Peter Lynchâ€“style investment signal.
 
                 Analysis Data:
                 {analysis_data}
@@ -505,3 +499,5 @@ def generate_lynch_output(
         state=state,
         default_factory=create_default_signal,
     )
+
+

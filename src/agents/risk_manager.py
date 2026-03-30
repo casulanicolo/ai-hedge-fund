@@ -1,317 +1,369 @@
-from langchain_core.messages import HumanMessage
-from src.graph.state import AgentState, show_agent_reasoning
-from src.utils.progress import progress
-from src.tools.api import get_prices, prices_to_df
+"""
+risk_manager.py — Athanor Alpha Phase 3.4
+Reads all analyst signals from state, computes:
+  - Correlation matrix (10 tickers)
+  - Sector concentration
+  - Parametric VaR
+  - Max drawdown limit check
+Writes risk_report to state. Does NOT block signals — only annotates.
+"""
+
+from __future__ import annotations
+
 import json
 import numpy as np
 import pandas as pd
-from src.utils.api_key import get_api_key_from_state
+from typing import Any
 
-##### Risk Management Agent #####
-def risk_management_agent(state: AgentState, agent_id: str = "risk_management_agent"):
-    """Controls position sizing based on volatility-adjusted risk factors for multiple tickers."""
-    portfolio = state["data"]["portfolio"]
-    data = state["data"]
-    tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
-    
-    # Initialize risk analysis for each ticker
-    risk_analysis = {}
-    current_prices = {}  # Store prices here to avoid redundant API calls
-    volatility_data = {}  # Store volatility metrics
-    returns_by_ticker: dict[str, pd.Series] = {}  # For correlation analysis
+from langchain_core.messages import HumanMessage
 
-    # First, fetch prices and calculate volatility for all relevant tickers
-    all_tickers = set(tickers) | set(portfolio.get("positions", {}).keys())
-    
-    for ticker in all_tickers:
-        progress.update_status(agent_id, ticker, "Fetching price data and calculating volatility")
-        
-        prices = get_prices(
-            ticker=ticker,
-            start_date=data["start_date"],
-            end_date=data["end_date"],
-            api_key=api_key,
-        )
+from src.graph.state import AgentState, show_agent_reasoning
+from src.utils.progress import progress
 
-        if not prices:
-            progress.update_status(agent_id, ticker, "Warning: No price data found")
-            volatility_data[ticker] = {
-                "daily_volatility": 0.05,  # Default fallback volatility (5% daily)
-                "annualized_volatility": 0.05 * np.sqrt(252),
-                "volatility_percentile": 100,  # Assume high risk if no data
-                "data_points": 0
+AGENT_ID = "risk_manager"
+
+# ── Sector map (hardcoded for the 10-ticker universe) ─────────────────────────
+SECTOR_MAP: dict[str, str] = {
+    "AAPL": "Technology",
+    "MSFT": "Technology",
+    "GOOGL": "Technology",
+    "AMZN": "Consumer Discretionary",
+    "NVDA": "Technology",
+    "META": "Technology",
+    "TSLA": "Consumer Discretionary",
+    "JPM": "Financials",
+    "V": "Financials",
+    "UNH": "Healthcare",
+}
+
+# ── Risk thresholds ────────────────────────────────────────────────────────────
+VAR_CONFIDENCE = 0.95          # 95% VaR
+MAX_SECTOR_PCT = 0.60          # >60% of bullish signals in one sector → warning
+MAX_PORTFOLIO_VAR = 0.04       # >4% daily VaR → warning
+MAX_DRAWDOWN_LIMIT = 0.15      # >15% estimated drawdown → warning
+MAX_SINGLE_TICKER_PCT = 0.25   # single ticker >25% sizing → warning
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Helper: extract OHLCV returns from prefetched data
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_returns(state: AgentState, tickers: list[str]) -> pd.DataFrame:
+    """
+    Extract daily close prices from prefetched_data and compute log returns.
+    Returns a DataFrame with tickers as columns, dates as index.
+    Falls back to empty DataFrame if data is missing.
+    """
+    prefetched: dict[str, Any] = state.get("data", {}).get("prefetched_data", {})
+    series: dict[str, pd.Series] = {}
+
+    for ticker in tickers:
+        payload = prefetched.get(ticker, {})
+        hist = payload.get("ohlcv_daily")  # expected: pd.DataFrame or dict
+
+        # Handle both DataFrame and dict-of-lists from prefetch cache
+        try:
+            if isinstance(hist, pd.DataFrame) and not hist.empty:
+                close = hist["Close"].dropna()
+            elif isinstance(hist, dict) and "Close" in hist:
+                close = pd.Series(hist["Close"]).dropna()
+            else:
+                continue
+
+            if len(close) < 20:
+                continue
+
+            log_ret = np.log(close / close.shift(1)).dropna()
+            series[ticker] = log_ret
+
+        except Exception:
+            continue
+
+    if not series:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(series)
+    return df.dropna()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Risk computations
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _correlation_matrix(returns: pd.DataFrame) -> dict:
+    """Compute pairwise correlation. Returns dict-of-dicts (JSON-serialisable)."""
+    if returns.empty or returns.shape[1] < 2:
+        return {}
+    corr = returns.corr().round(3)
+    return corr.to_dict()
+
+
+def _parametric_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
+    """
+    Parametric (Gaussian) portfolio VaR at VAR_CONFIDENCE level.
+    weights: {ticker: weight_fraction}  (must sum to 1)
+    Returns daily VaR as a positive fraction (e.g. 0.032 = 3.2%).
+    """
+    if returns.empty:
+        return 0.0
+
+    tickers = [t for t in weights if t in returns.columns]
+    if not tickers:
+        return 0.0
+
+    w = np.array([weights[t] for t in tickers])
+    w = w / w.sum()  # re-normalise
+
+    mu = returns[tickers].mean().values
+    cov = returns[tickers].cov().values
+
+    port_mean = float(np.dot(w, mu))
+    port_std = float(np.sqrt(w @ cov @ w))
+
+    # z-score for one-tailed confidence level
+    from scipy.stats import norm
+    z = norm.ppf(VAR_CONFIDENCE)
+    var = -(port_mean - z * port_std)
+    return max(0.0, round(var, 4))
+
+
+def _max_drawdown_estimate(returns: pd.DataFrame, weights: dict[str, float]) -> float:
+    """
+    Estimate max drawdown of equal-weight portfolio from historical returns.
+    Returns positive fraction.
+    """
+    if returns.empty:
+        return 0.0
+
+    tickers = [t for t in weights if t in returns.columns]
+    if not tickers:
+        return 0.0
+
+    w = np.array([weights.get(t, 1.0 / len(tickers)) for t in tickers])
+    w = w / w.sum()
+
+    port_ret = returns[tickers].values @ w
+    cum = np.exp(np.cumsum(port_ret))
+    running_max = np.maximum.accumulate(cum)
+    drawdowns = (cum - running_max) / running_max
+    max_dd = float(abs(drawdowns.min()))
+    return round(max_dd, 4)
+
+
+def _sector_concentration(bullish_tickers: list[str]) -> dict[str, float]:
+    """
+    Given a list of bullish tickers, compute fraction per sector.
+    Returns {sector: fraction}.
+    """
+    if not bullish_tickers:
+        return {}
+
+    counts: dict[str, int] = {}
+    for t in bullish_tickers:
+        sector = SECTOR_MAP.get(t, "Unknown")
+        counts[sector] = counts.get(sector, 0) + 1
+
+    total = len(bullish_tickers)
+    return {s: round(c / total, 3) for s, c in counts.items()}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Signal aggregation helper
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _aggregate_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
+    """
+    For each ticker, collect all agent signals and compute:
+      - bull_count, bear_count, neutral_count
+      - average confidence
+      - net_signal: "bullish" / "bearish" / "neutral"
+    """
+    analyst_signals: dict[str, Any] = state.get("data", {}).get("analyst_signals", {})
+
+    result: dict[str, dict] = {}
+
+    for ticker in tickers:
+        bull, bear, neut, total_conf, n = 0, 0, 0, 0.0, 0
+
+        for agent_id, agent_data in analyst_signals.items():
+            if not isinstance(agent_data, dict):
+                continue
+
+            # Agent data may be keyed by ticker or be a flat dict for one ticker
+            if ticker in agent_data:
+                sig_data = agent_data[ticker]
+            elif agent_data.get("ticker") == ticker:
+                sig_data = agent_data
+            else:
+                continue
+
+            if not isinstance(sig_data, dict):
+                continue
+
+            signal = str(sig_data.get("signal", "neutral")).lower()
+            confidence = float(sig_data.get("confidence", 0.5))
+
+            if signal == "bullish":
+                bull += 1
+            elif signal == "bearish":
+                bear += 1
+            else:
+                neut += 1
+
+            total_conf += confidence
+            n += 1
+
+        if n == 0:
+            result[ticker] = {
+                "bull_count": 0, "bear_count": 0, "neutral_count": 0,
+                "avg_confidence": 0.0, "net_signal": "neutral", "n_agents": 0,
             }
             continue
 
-        prices_df = prices_to_df(prices)
-        
-        if not prices_df.empty and len(prices_df) > 1:
-            current_price = prices_df["close"].iloc[-1]
-            current_prices[ticker] = current_price
-            
-            # Calculate volatility metrics
-            volatility_metrics = calculate_volatility_metrics(prices_df)
-            volatility_data[ticker] = volatility_metrics
+        avg_conf = round(total_conf / n, 3)
 
-            # Store returns for correlation analysis (use close-to-close returns)
-            daily_returns = prices_df["close"].pct_change().dropna()
-            if len(daily_returns) > 0:
-                returns_by_ticker[ticker] = daily_returns
-            
-            progress.update_status(
-                agent_id, 
-                ticker, 
-                f"Price: {current_price:.2f}, Ann. Vol: {volatility_metrics['annualized_volatility']:.1%}"
-            )
+        if bull > bear and bull > neut:
+            net = "bullish"
+        elif bear > bull and bear > neut:
+            net = "bearish"
         else:
-            progress.update_status(agent_id, ticker, "Warning: Insufficient price data")
-            current_prices[ticker] = 0
-            volatility_data[ticker] = {
-                "daily_volatility": 0.05,
-                "annualized_volatility": 0.05 * np.sqrt(252),
-                "volatility_percentile": 100,
-                "data_points": len(prices_df) if not prices_df.empty else 0
-            }
+            net = "neutral"
 
-    # Build returns DataFrame aligned across tickers for correlation analysis
-    correlation_matrix = None
-    if len(returns_by_ticker) >= 2:
-        try:
-            returns_df = pd.DataFrame(returns_by_ticker).dropna(how="any")
-            if returns_df.shape[1] >= 2 and returns_df.shape[0] >= 5:
-                correlation_matrix = returns_df.corr()
-        except Exception:
-            correlation_matrix = None
+        result[ticker] = {
+            "bull_count": bull,
+            "bear_count": bear,
+            "neutral_count": neut,
+            "avg_confidence": avg_conf,
+            "net_signal": net,
+            "n_agents": n,
+        }
 
-    # Determine which tickers currently have exposure (non-zero absolute position)
-    active_positions = {
-        t for t, pos in portfolio.get("positions", {}).items()
-        if abs(pos.get("long", 0) - pos.get("short", 0)) > 0
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main agent node
+# ══════════════════════════════════════════════════════════════════════════════
+
+def risk_manager_agent(state: AgentState) -> dict:
+    """
+    LangGraph node — Risk Manager.
+    Reads analyst_signals and prefetched_data from state.
+    Writes risk_report to state["data"]["risk_report"].
+    """
+    data: dict[str, Any] = state.get("data", {})
+    tickers: list[str] = data.get("tickers", list(SECTOR_MAP.keys()))
+
+    progress.update_status(AGENT_ID, None, "Aggregating analyst signals")
+
+    # ── 1. Aggregate signals across all agents ─────────────────────────────
+    agg = _aggregate_signals(state, tickers)
+
+    bullish_tickers = [t for t, v in agg.items() if v["net_signal"] == "bullish"]
+    bearish_tickers = [t for t, v in agg.items() if v["net_signal"] == "bearish"]
+
+    # ── 2. Equal-weight sizing for risk computation ────────────────────────
+    # Use bullish tickers only; uniform weights for now (portfolio manager
+    # will refine based on conviction later)
+    if bullish_tickers:
+        eq_weights = {t: 1.0 / len(bullish_tickers) for t in bullish_tickers}
+    else:
+        eq_weights = {t: 1.0 / len(tickers) for t in tickers}
+
+    # ── 3. Historical returns ──────────────────────────────────────────────
+    progress.update_status(AGENT_ID, None, "Computing correlation matrix")
+    returns = _get_returns(state, tickers)
+
+    corr_matrix = _correlation_matrix(returns)
+
+    # ── 4. Sector concentration ────────────────────────────────────────────
+    sector_fractions = _sector_concentration(bullish_tickers)
+    concentrated_sectors = {s: f for s, f in sector_fractions.items() if f > MAX_SECTOR_PCT}
+
+    # ── 5. VaR ────────────────────────────────────────────────────────────
+    progress.update_status(AGENT_ID, None, "Computing parametric VaR")
+    try:
+        daily_var = _parametric_var(returns, eq_weights)
+    except Exception:
+        daily_var = 0.0
+
+    # ── 6. Max drawdown estimate ───────────────────────────────────────────
+    try:
+        max_dd = _max_drawdown_estimate(returns, eq_weights)
+    except Exception:
+        max_dd = 0.0
+
+    # ── 7. Warnings ───────────────────────────────────────────────────────
+    warnings: list[str] = []
+
+    if concentrated_sectors:
+        for sector, frac in concentrated_sectors.items():
+            warnings.append(
+                f"Sector concentration: {int(frac*100)}% of bullish signals are {sector}"
+            )
+
+    if daily_var > MAX_PORTFOLIO_VAR:
+        warnings.append(
+            f"High portfolio VaR: {daily_var*100:.1f}% (threshold {MAX_PORTFOLIO_VAR*100:.0f}%)"
+        )
+
+    if max_dd > MAX_DRAWDOWN_LIMIT:
+        warnings.append(
+            f"Historical max drawdown: {max_dd*100:.1f}% (threshold {MAX_DRAWDOWN_LIMIT*100:.0f}%)"
+        )
+
+    # ── 8. Per-ticker risk flags ───────────────────────────────────────────
+    ticker_flags: dict[str, list[str]] = {t: [] for t in tickers}
+
+    # High pairwise correlation warning
+    if corr_matrix:
+        for t1 in tickers:
+            for t2 in tickers:
+                if t1 >= t2:
+                    continue
+                c = corr_matrix.get(t1, {}).get(t2, 0.0)
+                if abs(c) > 0.85:
+                    ticker_flags[t1].append(f"High correlation with {t2} ({c:.2f})")
+                    ticker_flags[t2].append(f"High correlation with {t1} ({c:.2f})")
+
+    # ── 9. Assemble risk report ────────────────────────────────────────────
+    risk_report = {
+        "signal_summary": agg,
+        "bullish_tickers": bullish_tickers,
+        "bearish_tickers": bearish_tickers,
+        "sector_concentration": sector_fractions,
+        "concentrated_sectors": concentrated_sectors,
+        "daily_var_95": daily_var,
+        "max_drawdown_estimate": max_dd,
+        "correlation_matrix": corr_matrix,
+        "ticker_flags": ticker_flags,
+        "warnings": warnings,
+        "risk_ok": len(warnings) == 0,
     }
 
-    # Calculate total portfolio value based on current market prices (Net Liquidation Value)
-    total_portfolio_value = portfolio.get("cash", 0.0)
-    
-    for ticker, position in portfolio.get("positions", {}).items():
-        if ticker in current_prices:
-            # Add market value of long positions
-            total_portfolio_value += position.get("long", 0) * current_prices[ticker]
-            # Subtract market value of short positions
-            total_portfolio_value -= position.get("short", 0) * current_prices[ticker]
-    
-    progress.update_status(agent_id, None, f"Total portfolio value: {total_portfolio_value:.2f}")
+    # ── 10. Write to state ────────────────────────────────────────────────
+    data["risk_report"] = risk_report
+    data["analyst_signals"][AGENT_ID] = {
+        "signal": "neutral",  # risk manager does not emit a trading signal
+        "confidence": 1.0,
+        "reasoning": f"Risk check complete. Warnings: {len(warnings)}. "
+                     f"Daily VaR 95%: {daily_var*100:.1f}%. "
+                     f"Max DD estimate: {max_dd*100:.1f}%.",
+    }
 
-    # Calculate volatility- and correlation-adjusted risk limits for each ticker
-    for ticker in tickers:
-        progress.update_status(agent_id, ticker, "Calculating volatility- and correlation-adjusted limits")
-        
-        if ticker not in current_prices or current_prices[ticker] <= 0:
-            progress.update_status(agent_id, ticker, "Failed: No valid price data")
-            risk_analysis[ticker] = {
-                "remaining_position_limit": 0.0,
-                "current_price": 0.0,
-                "reasoning": {
-                    "error": "Missing price data for risk calculation"
-                }
-            }
-            continue
-            
-        current_price = current_prices[ticker]
-        vol_data = volatility_data.get(ticker, {})
-        
-        # Calculate current market value of this position
-        position = portfolio.get("positions", {}).get(ticker, {})
-        long_value = position.get("long", 0) * current_price
-        short_value = position.get("short", 0) * current_price
-        current_position_value = abs(long_value - short_value)  # Use absolute exposure
-        
-        # Volatility-adjusted limit pct
-        vol_adjusted_limit_pct = calculate_volatility_adjusted_limit(
-            vol_data.get("annualized_volatility", 0.25)
-        )
+    # ── 11. Show reasoning ────────────────────────────────────────────────
+    show_agent_reasoning(risk_report, AGENT_ID)
 
-        # Correlation adjustment
-        corr_metrics = {
-            "avg_correlation_with_active": None,
-            "max_correlation_with_active": None,
-            "top_correlated_tickers": [],
-        }
-        corr_multiplier = 1.0
-        if correlation_matrix is not None and ticker in correlation_matrix.columns:
-            # Compute correlations with active positions (exclude self)
-            comparable = [t for t in active_positions if t in correlation_matrix.columns and t != ticker]
-            if not comparable:
-                # If no active positions, compare with all other available tickers
-                comparable = [t for t in correlation_matrix.columns if t != ticker]
-            if comparable:
-                series = correlation_matrix.loc[ticker, comparable]
-                # Drop NaNs just in case
-                series = series.dropna()
-                if len(series) > 0:
-                    avg_corr = float(series.mean())
-                    max_corr = float(series.max())
-                    corr_metrics["avg_correlation_with_active"] = avg_corr
-                    corr_metrics["max_correlation_with_active"] = max_corr
-                    # Top 3 most correlated tickers
-                    top_corr = series.sort_values(ascending=False).head(3)
-                    corr_metrics["top_correlated_tickers"] = [
-                        {"ticker": idx, "correlation": float(val)} for idx, val in top_corr.items()
-                    ]
-                    corr_multiplier = calculate_correlation_multiplier(avg_corr)
-        
-        # Combine volatility and correlation adjustments
-        combined_limit_pct = vol_adjusted_limit_pct * corr_multiplier
-        # Convert to dollar position limit
-        position_limit = total_portfolio_value * combined_limit_pct
-        
-        # Calculate remaining limit for this position
-        remaining_position_limit = position_limit - current_position_value
-        
-        # Ensure we don't exceed available cash
-        max_position_size = min(remaining_position_limit, portfolio.get("cash", 0))
-        
-        risk_analysis[ticker] = {
-            "remaining_position_limit": float(max_position_size),
-            "current_price": float(current_price),
-            "volatility_metrics": {
-                "daily_volatility": float(vol_data.get("daily_volatility", 0.05)),
-                "annualized_volatility": float(vol_data.get("annualized_volatility", 0.25)),
-                "volatility_percentile": float(vol_data.get("volatility_percentile", 100)),
-                "data_points": int(vol_data.get("data_points", 0))
-            },
-            "correlation_metrics": corr_metrics,
-            "reasoning": {
-                "portfolio_value": float(total_portfolio_value),
-                "current_position_value": float(current_position_value),
-                "base_position_limit_pct": float(vol_adjusted_limit_pct),
-                "correlation_multiplier": float(corr_multiplier),
-                "combined_position_limit_pct": float(combined_limit_pct),
-                "position_limit": float(position_limit),
-                "remaining_limit": float(remaining_position_limit),
-                "available_cash": float(portfolio.get("cash", 0)),
-                "risk_adjustment": f"Volatility x Correlation adjusted: {combined_limit_pct:.1%} (base {vol_adjusted_limit_pct:.1%})"
-            },
-        }
-        
-        progress.update_status(
-            agent_id, 
-            ticker, 
-            f"Adj. limit: {combined_limit_pct:.1%}, Available: ${max_position_size:.0f}"
-        )
-
-    progress.update_status(agent_id, None, "Done")
-
-    message = HumanMessage(
-        content=json.dumps(risk_analysis),
-        name=agent_id,
+    summary = (
+        f"Risk Manager | {len(bullish_tickers)} bullish / {len(bearish_tickers)} bearish "
+        f"| VaR {daily_var*100:.1f}% | MaxDD {max_dd*100:.1f}% "
+        f"| Warnings: {len(warnings)}"
     )
+    progress.update_status(AGENT_ID, None, "Done" if not warnings else f"⚠ {len(warnings)} warnings")
 
-    if state["metadata"]["show_reasoning"]:
-        show_agent_reasoning(risk_analysis, "Volatility-Adjusted Risk Management Agent")
-
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = risk_analysis
+    message = HumanMessage(content=summary, name=AGENT_ID)
 
     return {
-        "messages": state["messages"] + [message],
+        "messages": [message],
         "data": data,
     }
-
-
-def calculate_volatility_metrics(prices_df: pd.DataFrame, lookback_days: int = 60) -> dict:
-    """Calculate comprehensive volatility metrics from price data."""
-    if len(prices_df) < 2:
-        return {
-            "daily_volatility": 0.05,
-            "annualized_volatility": 0.05 * np.sqrt(252),
-            "volatility_percentile": 100,
-            "data_points": len(prices_df)
-        }
-    
-    # Calculate daily returns
-    daily_returns = prices_df["close"].pct_change().dropna()
-    
-    if len(daily_returns) < 2:
-        return {
-            "daily_volatility": 0.05,
-            "annualized_volatility": 0.05 * np.sqrt(252),
-            "volatility_percentile": 100,
-            "data_points": len(daily_returns)
-        }
-    
-    # Use the most recent lookback_days for volatility calculation
-    recent_returns = daily_returns.tail(min(lookback_days, len(daily_returns)))
-    
-    # Calculate volatility metrics
-    daily_vol = recent_returns.std()
-    annualized_vol = daily_vol * np.sqrt(252)  # Annualize assuming 252 trading days
-    
-    # Calculate percentile rank of recent volatility vs historical volatility
-    if len(daily_returns) >= 30:  # Need sufficient history for percentile calculation
-        # Calculate 30-day rolling volatility for the full history
-        rolling_vol = daily_returns.rolling(window=30).std().dropna()
-        if len(rolling_vol) > 0:
-            # Compare current volatility against historical rolling volatilities
-            current_vol_percentile = (rolling_vol <= daily_vol).mean() * 100
-        else:
-            current_vol_percentile = 50  # Default to median
-    else:
-        current_vol_percentile = 50  # Default to median if insufficient data
-    
-    return {
-        "daily_volatility": float(daily_vol) if not np.isnan(daily_vol) else 0.025,
-        "annualized_volatility": float(annualized_vol) if not np.isnan(annualized_vol) else 0.25,
-        "volatility_percentile": float(current_vol_percentile) if not np.isnan(current_vol_percentile) else 50.0,
-        "data_points": len(recent_returns)
-    }
-
-
-def calculate_volatility_adjusted_limit(annualized_volatility: float) -> float:
-    """
-    Calculate position limit as percentage of portfolio based on volatility.
-    
-    Logic:
-    - Low volatility (<15%): Up to 25% allocation
-    - Medium volatility (15-30%): 15-20% allocation  
-    - High volatility (>30%): 10-15% allocation
-    - Very high volatility (>50%): Max 10% allocation
-    """
-    base_limit = 0.20  # 20% baseline
-    
-    if annualized_volatility < 0.15:  # Low volatility
-        # Allow higher allocation for stable stocks
-        vol_multiplier = 1.25  # Up to 25%
-    elif annualized_volatility < 0.30:  # Medium volatility  
-        # Standard allocation with slight adjustment based on volatility
-        vol_multiplier = 1.0 - (annualized_volatility - 0.15) * 0.5  # 20% -> 12.5%
-    elif annualized_volatility < 0.50:  # High volatility
-        # Reduce allocation significantly
-        vol_multiplier = 0.75 - (annualized_volatility - 0.30) * 0.5  # 15% -> 5%
-    else:  # Very high volatility (>50%)
-        # Minimum allocation for very risky stocks
-        vol_multiplier = 0.50  # Max 10%
-    
-    # Apply bounds to ensure reasonable limits
-    vol_multiplier = max(0.25, min(1.25, vol_multiplier))  # 5% to 25% range
-    
-    return base_limit * vol_multiplier
-
-
-def calculate_correlation_multiplier(avg_correlation: float) -> float:
-    """Map average correlation to an adjustment multiplier.
-    - Very high correlation (>= 0.8): reduce limit sharply (0.7x)
-    - High correlation (0.6-0.8): reduce (0.85x)
-    - Moderate correlation (0.4-0.6): neutral (1.0x)
-    - Low correlation (0.2-0.4): slight increase (1.05x)
-    - Very low correlation (< 0.2): increase (1.10x)
-    """
-    if avg_correlation >= 0.80:
-        return 0.70
-    if avg_correlation >= 0.60:
-        return 0.85
-    if avg_correlation >= 0.40:
-        return 1.00
-    if avg_correlation >= 0.20:
-        return 1.05
-    return 1.10

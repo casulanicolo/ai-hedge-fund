@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Valuation Agent
 
@@ -11,20 +11,15 @@ import statistics
 from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
-from src.utils.api_key import get_api_key_from_state
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-)
+from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, register_state
 
 def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analyst_agent"):
     """Run valuation across tickers and write signals back to `state`."""
 
     data = state["data"]
+    register_state(state)
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     valuation_analysis: dict[str, dict] = {}
 
     for ticker in tickers:
@@ -36,14 +31,14 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
             end_date=end_date,
             period="ttm",
             limit=8,
-            api_key=api_key,
+            api_key=None,
         )
         if not financial_metrics:
             progress.update_status(agent_id, ticker, "Failed: No financial metrics found")
             continue
         most_recent_metrics = financial_metrics[0]
 
-        # --- Enhanced line‑items ---
+        # --- Enhanced lineâ€‘items ---
         progress.update_status(agent_id, ticker, "Gathering comprehensive line items")
         line_items = search_line_items(
             ticker=ticker,
@@ -64,7 +59,7 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
             end_date=end_date,
             period="ttm",
             limit=8,
-            api_key=api_key,
+            api_key=None,
         )
         if len(line_items) < 2:
             progress.update_status(agent_id, ticker, "Failed: Insufficient financial line items")
@@ -136,7 +131,7 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         # ------------------------------------------------------------------
         # Aggregate & signal
         # ------------------------------------------------------------------
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
         if not market_cap:
             progress.update_status(agent_id, ticker, "Failed: Market cap unavailable")
             continue
@@ -233,7 +228,7 @@ def calculate_owner_earnings_value(
     margin_of_safety: float = 0.25,
     num_years: int = 5,
 ) -> float:
-    """Buffett owner‑earnings valuation with margin‑of‑safety."""
+    """Buffett ownerâ€‘earnings valuation with marginâ€‘ofâ€‘safety."""
     if not all(isinstance(x, (int, float)) for x in [net_income, depreciation, capex, working_capital_change]):
         return 0
 
@@ -308,7 +303,7 @@ def calculate_residual_income_value(
     terminal_growth_rate: float = 0.03,
     num_years: int = 5,
 ):
-    """Residual Income Model (Edwards‑Bell‑Ohlson)."""
+    """Residual Income Model (Edwardsâ€‘Bellâ€‘Ohlson)."""
     if not (market_cap and net_income and price_to_book_ratio and price_to_book_ratio > 0):
         return 0
 
@@ -492,3 +487,5 @@ def calculate_dcf_scenarios(
         'upside': results['bull'],
         'downside': results['bear']
     }
+
+

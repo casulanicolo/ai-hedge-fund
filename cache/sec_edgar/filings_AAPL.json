@@ -1,0 +1,143 @@
+{
+  "cached_at": "2026-03-27T23:09:34.962434",
+  "data": {
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "10-Q": [
+      {
+        "form": "10-Q",
+        "date": "2026-01-30",
+        "accession": "0000320193-26-000006",
+        "document": "aapl-20251227.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-08-01",
+        "accession": "0000320193-25-000073",
+        "document": "aapl-20250628.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-05-02",
+        "accession": "0000320193-25-000057",
+        "document": "aapl-20250329.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-01-31",
+        "accession": "0000320193-25-000008",
+        "document": "aapl-20241228.htm"
+      }
+    ],
+    "10-K": [
+      {
+        "form": "10-K",
+        "date": "2025-10-31",
+        "accession": "0000320193-25-000079",
+        "document": "aapl-20250927.htm"
+      }
+    ],
+    "form4": [
+      {
+        "form": "4",
+        "date": "2026-03-17",
+        "accession": "0001780525-26-000005",
+        "document": "xslF345X05/wk-form4_1773786674.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001059235-26-000004",
+        "document": "xslF345X05/wk-form4_1772148856.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001216519-26-000004",
+        "document": "xslF345X05/wk-form4_1772148826.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001179864-26-000004",
+        "document": "xslF345X05/wk-form4_1772148791.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001214128-26-000004",
+        "document": "xslF345X05/wk-form4_1772148758.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001051401-26-000004",
+        "document": "xslF345X05/wk-form4_1772148721.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001453149-26-000005",
+        "document": "xslF345X05/wk-form4_1772148681.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-26",
+        "accession": "0001690882-26-000004",
+        "document": "xslF345X05/wk-form4_1772148630.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-03",
+        "accession": "0001059235-26-000002",
+        "document": "xslF345X05/wk-form4_1770161827.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-03",
+        "accession": "0001216519-26-000002",
+        "document": "xslF345X05/wk-form4_1770161790.xml"
+      }
+    ],
+    "8-K": [
+      {
+        "form": "8-K",
+        "date": "2026-02-24",
+        "accession": "0001140361-26-006577",
+        "document": "ef20060722_8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-01-29",
+        "accession": "0000320193-26-000005",
+        "document": "aapl-20260129.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-01-02",
+        "accession": "0001140361-26-000199",
+        "document": "ef20060722_8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-12-05",
+        "accession": "0001140361-25-044561",
+        "document": "ef20060722_8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-10-30",
+        "accession": "0000320193-25-000077",
+        "document": "aapl-20251030.htm"
+      }
+    ],
+    "xbrl_metrics": {
+      "revenue": 265595000000,
+      "net_income": 112010000000,
+      "eps_basic": null,
+      "total_assets": 359241000000,
+      "total_debt": 90678000000,
+      "operating_cf": 111482000000
+    }
+  }
+}

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timedelta
 import json
@@ -9,31 +9,24 @@ from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
 
-from src.tools.api import (
-    get_company_news,
-    get_financial_metrics,
-    get_insider_trades,
-    get_market_cap,
-    search_line_items,
-)
+from src.tools.api_shim import get_company_news, get_financial_metrics, get_insider_trades, get_market_cap, search_line_items, register_state
 from src.utils.llm import call_llm
 from src.utils.progress import progress
-from src.utils.api_key import get_api_key_from_state
 
 
 class MichaelBurrySignal(BaseModel):
     """Schema returned by the LLM."""
 
     signal: Literal["bullish", "bearish", "neutral"]
-    confidence: float  # 0–100
+    confidence: float  # 0â€“100
     reasoning: str
 
 
 def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"):
-    """Analyse stocks using Michael Burry's deep‑value, contrarian framework."""
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    """Analyse stocks using Michael Burry's deepâ€‘value, contrarian framework."""
     data = state["data"]
-    end_date: str = data["end_date"]  # YYYY‑MM‑DD
+    register_state(state)
+    end_date: str = data["end_date"]  # YYYYâ€‘MMâ€‘DD
     tickers: list[str] = data["tickers"]
 
     # We look one year back for insider trades / news flow
@@ -47,7 +40,7 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
         # Fetch raw data
         # ------------------------------------------------------------------
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="ttm", limit=5, api_key=api_key)
+        metrics = get_financial_metrics(ticker, end_date, period="ttm", limit=5, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching line items")
         line_items = search_line_items(
@@ -63,7 +56,7 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
                 "issuance_or_purchase_of_equity_shares",
             ],
             end_date,
-            api_key=api_key,
+            api_key=None,
         )
 
         progress.update_status(agent_id, ticker, "Fetching insider trades")
@@ -73,10 +66,10 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
         news = get_company_news(ticker, end_date=end_date, start_date=start_date, limit=250)
 
         progress.update_status(agent_id, ticker, "Fetching market cap")
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
 
         # ------------------------------------------------------------------
-        # Run sub‑analyses
+        # Run subâ€‘analyses
         # ------------------------------------------------------------------
         progress.update_status(agent_id, ticker, "Analyzing value")
         value_analysis = _analyze_value(metrics, line_items, market_cap)
@@ -159,25 +152,25 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
 
 
 ###############################################################################
-# Sub‑analysis helpers
+# Subâ€‘analysis helpers
 ###############################################################################
 
 
 def _latest_line_item(line_items: list):
-    """Return the most recent line‑item object or *None*."""
+    """Return the most recent lineâ€‘item object or *None*."""
     return line_items[0] if line_items else None
 
 
 # ----- Value ----------------------------------------------------------------
 
 def _analyze_value(metrics, line_items, market_cap):
-    """Free cash‑flow yield, EV/EBIT, other classic deep‑value metrics."""
+    """Free cashâ€‘flow yield, EV/EBIT, other classic deepâ€‘value metrics."""
 
-    max_score = 6  # 4 pts for FCF‑yield, 2 pts for EV/EBIT
+    max_score = 6  # 4 pts for FCFâ€‘yield, 2 pts for EV/EBIT
     score = 0
     details: list[str] = []
 
-    # Free‑cash‑flow yield
+    # Freeâ€‘cashâ€‘flow yield
     latest_item = _latest_line_item(line_items)
     fcf = getattr(latest_item, "free_cash_flow", None) if latest_item else None
     if fcf is not None and market_cap:
@@ -239,7 +232,7 @@ def _analyze_balance_sheet(metrics, line_items):
         else:
             details.append(f"High leverage D/E {debt_to_equity:.2f}")
     else:
-        details.append("Debt‑to‑equity data unavailable")
+        details.append("Debtâ€‘toâ€‘equity data unavailable")
 
     # Quick liquidity sanity check (cash vs total debt)
     if latest_item is not None:
@@ -328,9 +321,9 @@ def _generate_burry_output(
                 """You are an AI agent emulating Dr. Michael J. Burry. Your mandate:
                 - Hunt for deep value in US equities using hard numbers (free cash flow, EV/EBIT, balance sheet)
                 - Be contrarian: hatred in the press can be your friend if fundamentals are solid
-                - Focus on downside first – avoid leveraged balance sheets
+                - Focus on downside first â€“ avoid leveraged balance sheets
                 - Look for hard catalysts such as insider buying, buybacks, or asset sales
-                - Communicate in Burry's terse, data‑driven style
+                - Communicate in Burry's terse, dataâ€‘driven style
 
                 When providing your reasoning, be thorough and specific by:
                 1. Start with the key metric(s) that drove your decision
@@ -365,7 +358,7 @@ def _generate_burry_output(
 
     # Default fallback signal in case parsing fails
     def create_default_michael_burry_signal():
-        return MichaelBurrySignal(signal="neutral", confidence=0.0, reasoning="Parsing error – defaulting to neutral")
+        return MichaelBurrySignal(signal="neutral", confidence=0.0, reasoning="Parsing error â€“ defaulting to neutral")
 
     return call_llm(
         prompt=prompt,
@@ -374,3 +367,5 @@ def _generate_burry_output(
         state=state,
         default_factory=create_default_michael_burry_signal,
     )
+
+

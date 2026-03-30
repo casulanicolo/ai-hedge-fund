@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from typing_extensions import Literal
@@ -8,29 +8,24 @@ from src.graph.state import AgentState, show_agent_reasoning
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-)
-from src.utils.api_key import get_api_key_from_state
+from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, register_state
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 
 
 class AswathDamodaranSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
-    confidence: float          # 0‒100
+    confidence: float          # 0â€’100
     reasoning: str
 
 
 def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_agent"):
     """
     Analyze US equities through Aswath Damodaran's intrinsic-value lens:
-      • Cost of Equity via CAPM (risk-free + β·ERP)
-      • 5-yr revenue / FCFF growth trends & reinvestment efficiency
-      • FCFF-to-Firm DCF → equity value → per-share intrinsic value
-      • Cross-check with relative valuation (PE vs. Fwd PE sector median proxy)
+      â€¢ Cost of Equity via CAPM (risk-free + Î²Â·ERP)
+      â€¢ 5-yr revenue / FCFF growth trends & reinvestment efficiency
+      â€¢ FCFF-to-Firm DCF â†’ equity value â†’ per-share intrinsic value
+      â€¢ Cross-check with relative valuation (PE vs. Fwd PE sector median proxy)
     Produces a trading signal and explanation in Damodaran's analytical voice.
     """
     data      = state["data"]
@@ -42,9 +37,9 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
     damodaran_signals: dict[str, dict] = {}
 
     for ticker in tickers:
-        # ─── Fetch core data ────────────────────────────────────────────────────
+        # â”€â”€â”€ Fetch core data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="ttm", limit=5, api_key=api_key)
+        metrics = get_financial_metrics(ticker, end_date, period="ttm", limit=5, api_key=None)
 
         progress.update_status(agent_id, ticker, "Fetching financial line items")
         line_items = search_line_items(
@@ -60,13 +55,13 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
                 "total_debt",
             ],
             end_date,
-            api_key=api_key,
+            api_key=None,
         )
 
         progress.update_status(agent_id, ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        market_cap = get_market_cap(ticker, end_date, api_key=None)
 
-        # ─── Analyses ───────────────────────────────────────────────────────────
+        # â”€â”€â”€ Analyses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         progress.update_status(agent_id, ticker, "Analyzing growth and reinvestment")
         growth_analysis = analyze_growth_and_reinvestment(metrics, line_items)
 
@@ -79,7 +74,7 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
         progress.update_status(agent_id, ticker, "Assessing relative valuation")
         relative_val_analysis = analyze_relative_valuation(metrics)
 
-        # ─── Score & margin of safety ──────────────────────────────────────────
+        # â”€â”€â”€ Score & margin of safety â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         total_score = (
             growth_analysis["score"]
             + risk_analysis["score"]
@@ -112,7 +107,7 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
             "market_cap": market_cap,
         }
 
-        # ─── LLM: craft Damodaran-style narrative ──────────────────────────────
+        # â”€â”€â”€ LLM: craft Damodaran-style narrative â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         progress.update_status(agent_id, ticker, "Generating Damodaran analysis")
         damodaran_output = generate_damodaran_output(
             ticker=ticker,
@@ -125,7 +120,7 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
 
         progress.update_status(agent_id, ticker, "Done", analysis=damodaran_output.reasoning)
 
-    # ─── Push message back to graph state ──────────────────────────────────────
+    # â”€â”€â”€ Push message back to graph state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     message = HumanMessage(content=json.dumps(damodaran_signals), name=agent_id)
 
     if state["metadata"]["show_reasoning"]:
@@ -137,9 +132,9 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
     return {"messages": [message], "data": state["data"]}
 
 
-# ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Helper analyses
-# ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def analyze_growth_and_reinvestment(metrics: list, line_items: list) -> dict[str, any]:
     """
     Growth score (0-4):
@@ -195,7 +190,7 @@ def analyze_risk_profile(metrics: list, line_items: list) -> dict[str, any]:
     Risk score (0-3):
       +1  Beta < 1.3
       +1  Debt/Equity < 1
-      +1  Interest Coverage > 3×
+      +1  Interest Coverage > 3Ã—
     """
     max_score = 3
     if not metrics:
@@ -233,9 +228,9 @@ def analyze_risk_profile(metrics: list, line_items: list) -> dict[str, any]:
         coverage = ebit / abs(interest)
         if coverage > 3:
             score += 1
-            details.append(f"Interest coverage × {coverage:.1f}")
+            details.append(f"Interest coverage Ã— {coverage:.1f}")
         else:
-            details.append(f"Weak coverage × {coverage:.1f}")
+            details.append(f"Weak coverage Ã— {coverage:.1f}")
     else:
         details.append("Interest coverage NA")
 
@@ -256,7 +251,7 @@ def analyze_relative_valuation(metrics: list) -> dict[str, any]:
     Simple PE check vs. historical median (proxy since sector comps unavailable):
       +1 if TTM P/E < 70 % of 5-yr median
       +0 if between 70 %-130 %
-      ‑1 if >130 %
+      â€‘1 if >130 %
     """
     max_score = 1
     if not metrics or len(metrics) < 5:
@@ -279,16 +274,16 @@ def analyze_relative_valuation(metrics: list) -> dict[str, any]:
     return {"score": score, "max_score": max_score, "details": desc}
 
 
-# ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Intrinsic value via FCFF DCF (Damodaran style)
-# ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def calculate_intrinsic_value_dcf(metrics: list, line_items: list, risk_analysis: dict) -> dict[str, any]:
     """
     FCFF DCF with:
-      • Base FCFF = latest free cash flow
-      • Growth = 5-yr revenue CAGR (capped 12 %)
-      • Fade linearly to terminal growth 2.5 % by year 10
-      • Discount @ cost of equity (no debt split given data limitations)
+      â€¢ Base FCFF = latest free cash flow
+      â€¢ Growth = 5-yr revenue CAGR (capped 12 %)
+      â€¢ Fade linearly to terminal growth 2.5 % by year 10
+      â€¢ Discount @ cost of equity (no debt split given data limitations)
     """
     if not metrics or len(metrics) < 2 or not line_items:
         return {"intrinsic_value": None, "details": ["Insufficient data"]}
@@ -348,16 +343,16 @@ def calculate_intrinsic_value_dcf(metrics: list, line_items: list, risk_analysis
 
 
 def estimate_cost_of_equity(beta: float | None) -> float:
-    """CAPM: r_e = r_f + β × ERP (use Damodaran's long-term averages)."""
+    """CAPM: r_e = r_f + Î² Ã— ERP (use Damodaran's long-term averages)."""
     risk_free = 0.04          # 10-yr US Treasury proxy
     erp = 0.05                # long-run US equity risk premium
     beta = beta if beta is not None else 1.0
     return risk_free + beta * erp
 
 
-# ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # LLM generation
-# ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def generate_damodaran_output(
     ticker: str,
     analysis_data: dict[str, any],
@@ -366,9 +361,9 @@ def generate_damodaran_output(
 ) -> AswathDamodaranSignal:
     """
     Ask the LLM to channel Prof. Damodaran's analytical style:
-      • Story → Numbers → Value narrative
-      • Emphasize risk, growth, and cash-flow assumptions
-      • Cite cost of capital, implied MOS, and valuation cross-checks
+      â€¢ Story â†’ Numbers â†’ Value narrative
+      â€¢ Emphasize risk, growth, and cash-flow assumptions
+      â€¢ Cite cost of capital, implied MOS, and valuation cross-checks
     """
     template = ChatPromptTemplate.from_messages(
         [
@@ -378,10 +373,10 @@ def generate_damodaran_output(
                 Use your valuation framework to issue trading signals on US equities.
 
                 Speak with your usual clear, data-driven tone:
-                  ◦ Start with the company "story" (qualitatively)
-                  ◦ Connect that story to key numerical drivers: revenue growth, margins, reinvestment, risk
-                  ◦ Conclude with value: your FCFF DCF estimate, margin of safety, and relative valuation sanity checks
-                  ◦ Highlight major uncertainties and how they affect value
+                  â—¦ Start with the company "story" (qualitatively)
+                  â—¦ Connect that story to key numerical drivers: revenue growth, margins, reinvestment, risk
+                  â—¦ Conclude with value: your FCFF DCF estimate, margin of safety, and relative valuation sanity checks
+                  â—¦ Highlight major uncertainties and how they affect value
                 Return ONLY the JSON specified below.""",
             ),
             (
@@ -417,3 +412,5 @@ def generate_damodaran_output(
         state=state,
         default_factory=default_signal,
     )
+
+

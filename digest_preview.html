@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; }
+    .container { max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+    .header { padding: 20px 28px; color: #ffffff; }
+    .header-high   { background: #c0392b; }
+    .header-medium { background: #d35400; }
+    .header-low    { background: #27ae60; }
+    .header-digest { background: #2c3e50; }
+    .header h1 { margin: 0; font-size: 20px; letter-spacing: 0.5px; }
+    .header p  { margin: 4px 0 0; font-size: 13px; opacity: 0.85; }
+    .body { padding: 24px 28px; }
+    .section-title { font-size: 12px; font-weight: 700; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; margin: 20px 0 8px; border-bottom: 1px solid #ecf0f1; padding-bottom: 4px; }
+    .kv-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    .kv-table td { padding: 6px 4px; font-size: 14px; vertical-align: top; }
+    .kv-table td:first-child { color: #7f8c8d; width: 40%; }
+    .kv-table td:last-child  { color: #2c3e50; font-weight: 600; }
+    .alert-box { background: #fdf2f2; border-left: 4px solid #c0392b; padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 8px 0; font-size: 13px; color: #922b21; }
+    .alert-box-medium { background: #fef5ec; border-left-color: #d35400; color: #935116; }
+    .news-item { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    .news-item:last-child { border-bottom: none; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; margin-right: 6px; }
+    .badge-high   { background: #fadbd8; color: #922b21; }
+    .badge-medium { background: #fdebd0; color: #935116; }
+    .badge-low    { background: #eafaf1; color: #1e8449; }
+    .ticker-card { border: 1px solid #ecf0f1; border-radius: 6px; padding: 14px 16px; margin: 12px 0; }
+    .ticker-card-high   { border-left: 4px solid #c0392b; }
+    .ticker-card-medium { border-left: 4px solid #d35400; }
+    .ticker-card-low    { border-left: 4px solid #27ae60; }
+    .ticker-name { font-size: 16px; font-weight: 700; color: #2c3e50; }
+    .price-up   { color: #27ae60; font-weight: 700; }
+    .price-down { color: #c0392b; font-weight: 700; }
+    .footer { background: #f8f9fa; padding: 14px 28px; font-size: 11px; color: #95a5a6; text-align: center; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header header-digest">
+    <h1>📊 Athanor Alpha — Daily Digest</h1>
+    <p>2026-03-30 07:45 UTC · 2 position(s) monitored</p>
+  </div>
+  <div class="body">
+    <div class="section-title">Summary</div>
+    <table class="kv-table">
+      <tr><td>HIGH alerts</td><td><span style="color:#c0392b;font-weight:700">1</span></td></tr>
+      <tr><td>MEDIUM alerts</td><td><span style="color:#d35400;font-weight:700">0</span></td></tr>
+      <tr><td>LOW / clear</td><td><span style="color:#27ae60;font-weight:700">1</span></td></tr>
+    </table>
+
+    <div class="section-title">Positions</div>
+    
+        <div class="ticker-card ticker-card-high">
+          <div class="ticker-name">AAPL <span style="font-size:12px;font-weight:400;color:#7f8c8d">— HIGH</span></div>
+          <table class="kv-table" style="margin-top:8px">
+            <tr><td>Price</td><td>$248.80 <span class="price-up">+41.77%</span></td></tr>
+            <tr><td>Volume ratio</td><td>2.35x</td></tr>
+            <tr><td>News urgency</td><td><span class="badge badge-low">LOW</span></td></tr>
+            <tr><td>Alerts fired</td><td>⚠ 1</td></tr>
+          </table>
+        </div>
+        <div class="ticker-card ticker-card-low">
+          <div class="ticker-name">MSFT <span style="font-size:12px;font-weight:400;color:#7f8c8d">— LOW</span></div>
+          <table class="kv-table" style="margin-top:8px">
+            <tr><td>Price</td><td>$356.77 <span class="price-down">-14.07%</span></td></tr>
+            <tr><td>Volume ratio</td><td>1.13x</td></tr>
+            <tr><td>News urgency</td><td><span class="badge badge-medium">MEDIUM</span></td></tr>
+            <tr><td>Alerts fired</td><td>✓ None</td></tr>
+          </table>
+        </div>
+  </div>
+  <div class="footer">
+    Athanor Alpha Monitor · 2026-03-30 07:45 UTC · This is an automated digest. No trade has been executed.
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "positions": [
+    {
+      "ticker": "AAPL",
+      "entry_price": 175.50,
+      "shares": 10,
+      "entry_date": "2026-03-01",
+      "notes": "Long position after Q1 earnings"
+    },
+    {
+      "ticker": "MSFT",
+      "entry_price": 415.20,
+      "shares": 5,
+      "entry_date": "2026-03-10",
+      "notes": "Long position on cloud growth thesis"
+    }
+  ]
+}

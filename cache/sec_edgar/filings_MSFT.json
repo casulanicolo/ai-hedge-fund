@@ -1,0 +1,143 @@
+{
+  "cached_at": "2026-03-27T23:16:55.681422",
+  "data": {
+    "ticker": "MSFT",
+    "cik": "0000789019",
+    "10-Q": [
+      {
+        "form": "10-Q",
+        "date": "2026-01-28",
+        "accession": "0001193125-26-027207",
+        "document": "msft-20251231.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-10-29",
+        "accession": "0001193125-25-256321",
+        "document": "msft-20250930.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-04-30",
+        "accession": "0000950170-25-061046",
+        "document": "msft-20250331.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-01-29",
+        "accession": "0000950170-25-010491",
+        "document": "msft-20241231.htm"
+      }
+    ],
+    "10-K": [
+      {
+        "form": "10-K",
+        "date": "2025-07-30",
+        "accession": "0000950170-25-100235",
+        "document": "msft-20250630.htm"
+      }
+    ],
+    "form4": [
+      {
+        "form": "4",
+        "date": "2026-03-16",
+        "accession": "0000789019-26-000066",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000064",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000063",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000062",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000061",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000060",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000059",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000058",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-13",
+        "accession": "0000789019-26-000057",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-09",
+        "accession": "0000789019-26-000048",
+        "document": "xslF345X05/form4.xml"
+      }
+    ],
+    "8-K": [
+      {
+        "form": "8-K",
+        "date": "2026-01-28",
+        "accession": "0001193125-26-027198",
+        "document": "msft-20260128.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-12-08",
+        "accession": "0001193125-25-311196",
+        "document": "d34077d8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-10-29",
+        "accession": "0001193125-25-256310",
+        "document": "msft-20251028.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-09-30",
+        "accession": "0001193125-25-225125",
+        "document": "d863209d8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-07-30",
+        "accession": "0000950170-25-100226",
+        "document": "msft-20250730.htm"
+      }
+    ],
+    "xbrl_metrics": {
+      "revenue": 62484000000,
+      "net_income": 101832000000,
+      "eps_basic": null,
+      "total_assets": 619003000000,
+      "total_debt": 43151000000,
+      "operating_cf": 136162000000
+    }
+  }
+}

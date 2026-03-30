@@ -1,0 +1,143 @@
+{
+  "cached_at": "2026-03-27T23:21:44.020136",
+  "data": {
+    "ticker": "NVDA",
+    "cik": "0001045810",
+    "10-Q": [
+      {
+        "form": "10-Q",
+        "date": "2025-11-19",
+        "accession": "0001045810-25-000230",
+        "document": "nvda-20251026.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-08-27",
+        "accession": "0001045810-25-000209",
+        "document": "nvda-20250727.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-05-28",
+        "accession": "0001045810-25-000116",
+        "document": "nvda-20250427.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2024-11-20",
+        "accession": "0001045810-24-000316",
+        "document": "nvda-20241027.htm"
+      }
+    ],
+    "10-K": [
+      {
+        "form": "10-K",
+        "date": "2026-02-25",
+        "accession": "0001045810-26-000021",
+        "document": "nvda-20260125.htm"
+      }
+    ],
+    "form4": [
+      {
+        "form": "4",
+        "date": "2026-03-24",
+        "accession": "0001199039-26-000003",
+        "document": "xslF345X06/wk-form4_1774386816.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001725292-26-000002",
+        "document": "xslF345X06/wk-form4_1774052040.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001526111-26-000005",
+        "document": "xslF345X06/wk-form4_1774051982.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001696841-26-000006",
+        "document": "xslF345X06/wk-form4_1774051862.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001283854-26-000006",
+        "document": "xslF345X06/wk-form4_1774051812.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001347842-26-000011",
+        "document": "xslF345X06/wk-form4_1774051696.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001588670-26-000010",
+        "document": "xslF345X06/wk-form4_1774051632.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-20",
+        "accession": "0001197649-26-000005",
+        "document": "xslF345X06/wk-form4_1774051558.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-19",
+        "accession": "0001197652-26-000003",
+        "document": "xslF345X06/wk-form4_1773955615.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-17",
+        "accession": "0001818224-26-000002",
+        "document": "xslF345X05/wk-form4_1773781935.xml"
+      }
+    ],
+    "8-K": [
+      {
+        "form": "8-K",
+        "date": "2026-03-06",
+        "accession": "0001045810-26-000024",
+        "document": "nvda-20260302.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-02-25",
+        "accession": "0001045810-26-000019",
+        "document": "nvda-20260225.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-01-23",
+        "accession": "0001045810-26-000003",
+        "document": "nvda-20260120.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-11-19",
+        "accession": "0001045810-25-000228",
+        "document": "nvda-20251119.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-08-27",
+        "accession": "0001045810-25-000207",
+        "document": "nvda-20250827.htm"
+      }
+    ],
+    "xbrl_metrics": {
+      "revenue": 215938000000,
+      "net_income": 120067000000,
+      "eps_basic": null,
+      "total_assets": 206803000000,
+      "total_debt": 8468000000,
+      "operating_cf": 102718000000
+    }
+  }
+}

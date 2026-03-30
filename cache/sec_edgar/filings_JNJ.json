@@ -1,0 +1,143 @@
+{
+  "cached_at": "2026-03-30T08:28:04.556091",
+  "data": {
+    "ticker": "JNJ",
+    "cik": "0000200406",
+    "10-Q": [
+      {
+        "form": "10-Q",
+        "date": "2025-10-22",
+        "accession": "0000200406-25-000209",
+        "document": "jnj-20250928.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-07-24",
+        "accession": "0000200406-25-000178",
+        "document": "jnj-20250629.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-04-23",
+        "accession": "0000200406-25-000119",
+        "document": "jnj-20250330.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2024-10-23",
+        "accession": "0000200406-24-000096",
+        "document": "jnj-20240929.htm"
+      }
+    ],
+    "10-K": [
+      {
+        "form": "10-K",
+        "date": "2026-02-11",
+        "accession": "0000200406-26-000016",
+        "document": "jnj-20251228.htm"
+      }
+    ],
+    "form4": [
+      {
+        "form": "4",
+        "date": "2026-03-12",
+        "accession": "0000200406-26-000070",
+        "document": "xslF345X05/wk-form4_1773365486.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-12",
+        "accession": "0000200406-26-000069",
+        "document": "xslF345X05/wk-form4_1773362378.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-12",
+        "accession": "0000200406-26-000067",
+        "document": "xslF345X05/wk-form4_1773362248.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-03",
+        "accession": "0000200406-26-000048",
+        "document": "xslF345X05/wk-form4_1772572907.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-23",
+        "accession": "0000200406-26-000046",
+        "document": "xslF345X05/wk-form4_1771885218.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-18",
+        "accession": "0000200406-26-000044",
+        "document": "xslF345X05/wk-form4_1771467149.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-18",
+        "accession": "0000200406-26-000043",
+        "document": "xslF345X05/wk-form4_1771467143.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-18",
+        "accession": "0000200406-26-000042",
+        "document": "xslF345X05/wk-form4_1771467137.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-18",
+        "accession": "0000200406-26-000041",
+        "document": "xslF345X05/wk-form4_1771467131.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-18",
+        "accession": "0000200406-26-000040",
+        "document": "xslF345X05/wk-form4_1771467125.xml"
+      }
+    ],
+    "8-K": [
+      {
+        "form": "8-K",
+        "date": "2026-01-21",
+        "accession": "0000200406-26-000002",
+        "document": "jnj-20260121.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-10-14",
+        "accession": "0000200406-25-000201",
+        "document": "jnj-20251014.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-09-09",
+        "accession": "0000200406-25-000190",
+        "document": "jnj-20250908.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-07-16",
+        "accession": "0000200406-25-000170",
+        "document": "jnj-20250716.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-06-10",
+        "accession": "0000200406-25-000152",
+        "document": "jnj-20250610.htm"
+      }
+    ],
+    "xbrl_metrics": {
+      "revenue": null,
+      "net_income": 26804000000,
+      "eps_basic": null,
+      "total_assets": 199210000000,
+      "total_debt": 41438000000,
+      "operating_cf": 24530000000
+    }
+  }
+}

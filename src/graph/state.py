@@ -8,6 +8,7 @@ can write concurrently without triggering InvalidUpdateError.
 """
 
 from __future__ import annotations
+from datetime import date
 
 import operator
 from typing import Annotated, Any, Optional, TypedDict
@@ -80,6 +81,8 @@ def make_initial_state(
     start_ts: str,
     feedback_history: Optional[FeedbackHistory] = None,
     agent_weights: Optional[AgentWeights] = None,
+    end_date: Optional[str] = None,
+    start_date: Optional[str] = None,
 ) -> AgentState:
     """Construct a fresh AgentState for a pipeline run."""
     return AgentState(
@@ -90,11 +93,18 @@ def make_initial_state(
             "agent_weights":    agent_weights or {},
             "risk_output":      {},
             "portfolio_output": [],
+            # Convenience keys read directly by legacy philosophy agents
+            "tickers":   tickers,
+            "end_date":  end_date or date.today().isoformat(),
+            "start_date": start_date,
         },
         metadata={
-            "run_id":   run_id,
-            "tickers":  tickers,
-            "start_ts": start_ts,
+            "run_id":         run_id,
+            "tickers":        tickers,
+            "start_ts":       start_ts,
+            "show_reasoning": False,
+            "model_name":     "claude-sonnet-4-5",
+            "model_provider": "Anthropic",
         },
         messages=[],
     )
@@ -133,3 +143,19 @@ def set_analyst_signal(
     if agent_id not in signals:
         signals[agent_id] = {}
     signals[agent_id][ticker] = signal
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Display helper (compatibility shim for all analyst agents)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def show_agent_reasoning(output: Any, agent_name: str = "") -> None:
+    """Print agent reasoning to stdout when show_reasoning is enabled."""
+    import json
+    header = f"{'='*60}\n{agent_name} Reasoning\n{'='*60}"
+    print(header)
+    if isinstance(output, dict):
+        print(json.dumps(output, indent=2, default=str))
+    else:
+        print(output)
+    print()

@@ -1,163 +1,313 @@
+# src/agents/fundamentals.py
+from __future__ import annotations
+
+from typing import Any
+
+import pandas as pd
+import yfinance as yf
+from pydantic import BaseModel, Field
+from typing_extensions import Literal
 from langchain_core.messages import HumanMessage
+
 from src.graph.state import AgentState, show_agent_reasoning
-from src.utils.api_key import get_api_key_from_state
+from src.utils.llm import call_llm
 from src.utils.progress import progress
-import json
-
-from src.tools.api import get_financial_metrics
 
 
-##### Fundamental Agent #####
-def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_analyst_agent"):
-    """Analyzes fundamental data and generates trading signals for multiple tickers."""
-    data = state["data"]
-    end_date = data["end_date"]
-    tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
-    # Initialize fundamental analysis for each ticker
-    fundamental_analysis = {}
+# ── Pydantic output schema ───────────────────────────────────────────────────
 
-    for ticker in tickers:
-        progress.update_status(agent_id, ticker, "Fetching financial metrics")
-
-        # Get the financial metrics
-        financial_metrics = get_financial_metrics(
-            ticker=ticker,
-            end_date=end_date,
-            period="ttm",
-            limit=10,
-            api_key=api_key,
-        )
-
-        if not financial_metrics:
-            progress.update_status(agent_id, ticker, "Failed: No financial metrics found")
-            continue
-
-        # Pull the most recent financial metrics
-        metrics = financial_metrics[0]
-
-        # Initialize signals list for different fundamental aspects
-        signals = []
-        reasoning = {}
-
-        progress.update_status(agent_id, ticker, "Analyzing profitability")
-        # 1. Profitability Analysis
-        return_on_equity = metrics.return_on_equity
-        net_margin = metrics.net_margin
-        operating_margin = metrics.operating_margin
-
-        thresholds = [
-            (return_on_equity, 0.15),  # Strong ROE above 15%
-            (net_margin, 0.20),  # Healthy profit margins
-            (operating_margin, 0.15),  # Strong operating efficiency
-        ]
-        profitability_score = sum(metric is not None and metric > threshold for metric, threshold in thresholds)
-
-        signals.append("bullish" if profitability_score >= 2 else "bearish" if profitability_score == 0 else "neutral")
-        reasoning["profitability_signal"] = {
-            "signal": signals[0],
-            "details": (f"ROE: {return_on_equity:.2%}" if return_on_equity else "ROE: N/A") + ", " + (f"Net Margin: {net_margin:.2%}" if net_margin else "Net Margin: N/A") + ", " + (f"Op Margin: {operating_margin:.2%}" if operating_margin else "Op Margin: N/A"),
-        }
-
-        progress.update_status(agent_id, ticker, "Analyzing growth")
-        # 2. Growth Analysis
-        revenue_growth = metrics.revenue_growth
-        earnings_growth = metrics.earnings_growth
-        book_value_growth = metrics.book_value_growth
-
-        thresholds = [
-            (revenue_growth, 0.10),  # 10% revenue growth
-            (earnings_growth, 0.10),  # 10% earnings growth
-            (book_value_growth, 0.10),  # 10% book value growth
-        ]
-        growth_score = sum(metric is not None and metric > threshold for metric, threshold in thresholds)
-
-        signals.append("bullish" if growth_score >= 2 else "bearish" if growth_score == 0 else "neutral")
-        reasoning["growth_signal"] = {
-            "signal": signals[1],
-            "details": (f"Revenue Growth: {revenue_growth:.2%}" if revenue_growth else "Revenue Growth: N/A") + ", " + (f"Earnings Growth: {earnings_growth:.2%}" if earnings_growth else "Earnings Growth: N/A"),
-        }
-
-        progress.update_status(agent_id, ticker, "Analyzing financial health")
-        # 3. Financial Health
-        current_ratio = metrics.current_ratio
-        debt_to_equity = metrics.debt_to_equity
-        free_cash_flow_per_share = metrics.free_cash_flow_per_share
-        earnings_per_share = metrics.earnings_per_share
-
-        health_score = 0
-        if current_ratio and current_ratio > 1.5:  # Strong liquidity
-            health_score += 1
-        if debt_to_equity and debt_to_equity < 0.5:  # Conservative debt levels
-            health_score += 1
-        if free_cash_flow_per_share and earnings_per_share and free_cash_flow_per_share > earnings_per_share * 0.8:  # Strong FCF conversion
-            health_score += 1
-
-        signals.append("bullish" if health_score >= 2 else "bearish" if health_score == 0 else "neutral")
-        reasoning["financial_health_signal"] = {
-            "signal": signals[2],
-            "details": (f"Current Ratio: {current_ratio:.2f}" if current_ratio else "Current Ratio: N/A") + ", " + (f"D/E: {debt_to_equity:.2f}" if debt_to_equity else "D/E: N/A"),
-        }
-
-        progress.update_status(agent_id, ticker, "Analyzing valuation ratios")
-        # 4. Price to X ratios
-        pe_ratio = metrics.price_to_earnings_ratio
-        pb_ratio = metrics.price_to_book_ratio
-        ps_ratio = metrics.price_to_sales_ratio
-
-        thresholds = [
-            (pe_ratio, 25),  # Reasonable P/E ratio
-            (pb_ratio, 3),  # Reasonable P/B ratio
-            (ps_ratio, 5),  # Reasonable P/S ratio
-        ]
-        price_ratio_score = sum(metric is not None and metric > threshold for metric, threshold in thresholds)
-
-        signals.append("bearish" if price_ratio_score >= 2 else "bullish" if price_ratio_score == 0 else "neutral")
-        reasoning["price_ratios_signal"] = {
-            "signal": signals[3],
-            "details": (f"P/E: {pe_ratio:.2f}" if pe_ratio else "P/E: N/A") + ", " + (f"P/B: {pb_ratio:.2f}" if pb_ratio else "P/B: N/A") + ", " + (f"P/S: {ps_ratio:.2f}" if ps_ratio else "P/S: N/A"),
-        }
-
-        progress.update_status(agent_id, ticker, "Calculating final signal")
-        # Determine overall signal
-        bullish_signals = signals.count("bullish")
-        bearish_signals = signals.count("bearish")
-
-        if bullish_signals > bearish_signals:
-            overall_signal = "bullish"
-        elif bearish_signals > bullish_signals:
-            overall_signal = "bearish"
-        else:
-            overall_signal = "neutral"
-
-        # Calculate confidence level
-        total_signals = len(signals)
-        confidence = round(max(bullish_signals, bearish_signals) / total_signals, 2) * 100
-
-        fundamental_analysis[ticker] = {
-            "signal": overall_signal,
-            "confidence": confidence,
-            "reasoning": reasoning,
-        }
-
-        progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(reasoning, indent=4))
-
-    # Create the fundamental analysis message
-    message = HumanMessage(
-        content=json.dumps(fundamental_analysis),
-        name=agent_id,
+class FundamentalSignal(BaseModel):
+    signal: Literal["bullish", "bearish", "neutral"] = Field(
+        description="Trading signal based on fundamental analysis"
+    )
+    confidence: float = Field(
+        description="Confidence level between 0 and 100"
+    )
+    reasoning: str = Field(
+        description="Concise explanation of the signal, max 3 sentences"
     )
 
-    # Print the reasoning if the flag is set
-    if state["metadata"]["show_reasoning"]:
-        show_agent_reasoning(fundamental_analysis, "Fundamental Analysis Agent")
 
-    # Add the signal to the analyst_signals list
+# ── Data loader ──────────────────────────────────────────────────────────────
+
+def _load_ticker_data(state: AgentState, ticker: str) -> dict:
+    """
+    Load financial data for a ticker.
+    First tries prefetched_data (if prefetch agent ran).
+    Falls back to fetching directly from yfinance.
+    """
+    prefetched = state.get("data", {}).get("prefetched_data", {}).get(ticker)
+    if prefetched:
+        return prefetched
+
+    # Fallback: fetch directly
+    t = yf.Ticker(ticker)
+    return {
+        "income_stmt_q":  t.quarterly_income_stmt,
+        "balance_sheet_q": t.quarterly_balance_sheet,
+        "cash_flow_q":    t.quarterly_cashflow,
+        "info":           t.info or {},
+    }
+
+
+# ── Scoring helpers ──────────────────────────────────────────────────────────
+
+def score_revenue_growth(incq: pd.DataFrame) -> tuple[float, dict]:
+    """Score 0-100 based on QoQ and YoY revenue growth."""
+    raw: dict[str, Any] = {}
+    try:
+        rev = incq.loc["Total Revenue"]
+        q0 = float(rev.iloc[0])
+        q1 = float(rev.iloc[1])
+        q4 = float(rev.iloc[4]) if len(rev) > 4 else None
+
+        qoq = (q0 - q1) / abs(q1) if q1 else None
+        yoy = (q0 - q4) / abs(q4) if q4 else None
+
+        raw["revenue_q0_B"]     = round(q0 / 1e9, 2)
+        raw["revenue_qoq_pct"]  = round(qoq * 100, 2) if qoq is not None else None
+        raw["revenue_yoy_pct"]  = round(yoy * 100, 2) if yoy is not None else None
+
+        score = 50.0
+        if qoq is not None:
+            score += max(-50, min(50, qoq * 500))   # ±10% QoQ → ±50 pts
+        if yoy is not None:
+            score += max(-50, min(50, yoy * 250))   # ±20% YoY → ±50 pts
+        score = max(0, min(100, score))
+    except Exception as e:
+        raw["error"] = str(e)
+        score = 50.0
+
+    return round(score, 1), raw
+
+
+def score_operating_margin(incq: pd.DataFrame) -> tuple[float, dict]:
+    """Score 0-100 based on operating margin level and trend."""
+    raw: dict[str, Any] = {}
+    try:
+        op_inc = incq.loc["Operating Income"]
+        rev    = incq.loc["Total Revenue"]
+
+        margins = []
+        for i in range(min(4, len(op_inc))):
+            r = float(rev.iloc[i])
+            o = float(op_inc.iloc[i])
+            margins.append(o / r if r else None)
+
+        margins = [m for m in margins if m is not None]
+        current = margins[0] if margins else None
+        trend   = margins[0] - margins[-1] if len(margins) >= 2 else 0
+
+        raw["op_margin_current_pct"] = round(current * 100, 2) if current is not None else None
+        raw["op_margin_trend_pct"]   = round(trend * 100, 2)
+        raw["op_margins_history"]    = [round(m * 100, 2) for m in margins]
+
+        score = 50.0
+        if current is not None:
+            score += max(-50, min(50, current * 250))  # 20% margin → +50 pts
+        score += max(-20, min(20, trend * 200))        # improving trend bonus
+        score = max(0, min(100, score))
+    except Exception as e:
+        raw["error"] = str(e)
+        score = 50.0
+
+    return round(score, 1), raw
+
+
+def score_fcf_yield(cfq: pd.DataFrame, market_cap: float | None) -> tuple[float, dict]:
+    """Score 0-100 based on trailing-twelve-month FCF yield."""
+    raw: dict[str, Any] = {}
+    try:
+        fcf_vals = cfq.loc["Free Cash Flow"]
+        ttm_fcf  = sum(float(fcf_vals.iloc[i]) for i in range(min(4, len(fcf_vals))))
+
+        raw["ttm_fcf_B"]    = round(ttm_fcf / 1e9, 2)
+        raw["market_cap_B"] = round(market_cap / 1e9, 2) if market_cap else None
+
+        if market_cap and market_cap > 0:
+            yield_  = ttm_fcf / market_cap
+            raw["fcf_yield_pct"] = round(yield_ * 100, 2)
+            score = 50 + yield_ * 1000   # 5% yield → +50 pts
+            score = max(0, min(100, score))
+        else:
+            score = 50.0
+            raw["fcf_yield_pct"] = None
+    except Exception as e:
+        raw["error"] = str(e)
+        score = 50.0
+
+    return round(score, 1), raw
+
+
+def score_debt_equity(bsq: pd.DataFrame) -> tuple[float, dict]:
+    """Score 0-100: lower and improving D/E is better."""
+    raw: dict[str, Any] = {}
+    try:
+        debt   = bsq.loc["Total Debt"]
+        equity = bsq.loc["Common Stock Equity"]
+
+        ratios = []
+        for i in range(min(4, len(debt))):
+            d = float(debt.iloc[i])
+            e = float(equity.iloc[i])
+            ratios.append(d / e if e and e != 0 else None)
+
+        ratios  = [r for r in ratios if r is not None]
+        current = ratios[0] if ratios else None
+        trend   = ratios[0] - ratios[-1] if len(ratios) >= 2 else 0
+
+        raw["debt_equity_current"] = round(current, 3) if current is not None else None
+        raw["debt_equity_trend"]   = round(trend, 3)
+
+        if current is not None:
+            score = 100 - min(100, current * 25)  # D/E=0→100, D/E=4→0
+        else:
+            score = 50.0
+        score -= max(-20, min(20, trend * 20))    # improving trend bonus
+        score = max(0, min(100, score))
+    except Exception as e:
+        raw["error"] = str(e)
+        score = 50.0
+
+    return round(score, 1), raw
+
+
+def score_insider_activity(info: dict) -> tuple[float, dict]:
+    """Score 0-100 from insider ownership (heldPercentInsiders)."""
+    raw: dict[str, Any] = {}
+    try:
+        held = info.get("heldPercentInsiders")
+        raw["held_pct_insiders"] = held
+
+        if held is None:
+            return 50.0, raw
+
+        score = 50 + min(50, held * 400)   # 10% insiders → +40 pts
+        score = max(0, min(100, score))
+    except Exception as e:
+        raw["error"] = str(e)
+        score = 50.0
+
+    return round(score, 1), raw
+
+
+# ── Main agent ───────────────────────────────────────────────────────────────
+
+def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_analyst_agent"):
+    """
+    Fundamental Analyst Agent — Fase 3.2
+    Per ogni ticker:
+    1. Legge dati finanziari da prefetched_data o yfinance (fallback)
+    2. Calcola 5 score (0-100): revenue growth, op margin, FCF yield, D/E, insider
+    3. Passa score + raw data all'LLM per segnale finale
+    4. Output strutturato: {signal, confidence, reasoning, scores}
+    """
+    data    = state["data"]
+    tickers = data["tickers"]
+
+    fundamental_analysis: dict[str, dict] = {}
+
+    for ticker in tickers:
+        progress.update_status(agent_id, ticker, "Loading financial data")
+
+        try:
+            payload    = _load_ticker_data(state, ticker)
+            incq       = payload.get("income_stmt_q")
+            bsq        = payload.get("balance_sheet_q")
+            cfq        = payload.get("cash_flow_q")
+            info       = payload.get("info", {})
+            market_cap = info.get("marketCap")
+
+            # ── Compute scores ───────────────────────────────────────────
+            progress.update_status(agent_id, ticker, "Computing fundamental scores")
+
+            s_rev, r_rev = score_revenue_growth(incq)       if incq is not None and not incq.empty else (50.0, {"error": "no data"})
+            s_mar, r_mar = score_operating_margin(incq)     if incq is not None and not incq.empty else (50.0, {"error": "no data"})
+            s_fcf, r_fcf = score_fcf_yield(cfq, market_cap) if cfq  is not None and not cfq.empty  else (50.0, {"error": "no data"})
+            s_de,  r_de  = score_debt_equity(bsq)           if bsq  is not None and not bsq.empty   else (50.0, {"error": "no data"})
+            s_ins, r_ins = score_insider_activity(info)
+
+            composite = round((s_rev + s_mar + s_fcf + s_de + s_ins) / 5, 1)
+
+            scores = {
+                "revenue_growth":   s_rev,
+                "operating_margin": s_mar,
+                "fcf_yield":        s_fcf,
+                "debt_equity":      s_de,
+                "insider_activity": s_ins,
+                "composite":        composite,
+            }
+
+            raw_data = {
+                "revenue_growth":   r_rev,
+                "operating_margin": r_mar,
+                "fcf_yield":        r_fcf,
+                "debt_equity":      r_de,
+                "insider_activity": r_ins,
+            }
+
+            # ── LLM call ─────────────────────────────────────────────────
+            progress.update_status(agent_id, ticker, "Generating signal via LLM")
+
+            prompt = f"""You are a fundamental analyst evaluating {ticker}.
+
+QUANTITATIVE SCORES (0=worst, 100=best):
+- Revenue Growth (QoQ + YoY): {s_rev}/100
+- Operating Margin Trend:     {s_mar}/100
+- FCF Yield:                  {s_fcf}/100
+- Debt/Equity Trajectory:     {s_de}/100
+- Insider Ownership:          {s_ins}/100
+- COMPOSITE SCORE:            {composite}/100
+
+RAW DATA:
+{raw_data}
+
+Rules:
+- signal = "bullish" if composite > 65
+- signal = "bearish" if composite < 35
+- signal = "neutral" otherwise
+- confidence = integer 0-100 reflecting your certainty
+- reasoning = 2-3 sentences explaining the key fundamental drivers
+
+Respond in JSON format.
+"""
+
+            result: FundamentalSignal = call_llm(
+                prompt=prompt,
+                pydantic_model=FundamentalSignal,
+                agent_name=agent_id,
+                state=state,
+            )
+
+            fundamental_analysis[ticker] = {
+                "signal":     result.signal,
+                "confidence": result.confidence,
+                "reasoning":  result.reasoning,
+                "scores":     scores,
+            }
+
+            show_agent_reasoning(
+                {"scores": scores, "signal": result.signal, "confidence": result.confidence},
+                "Fundamental Analyst",
+            )
+
+            progress.update_status(agent_id, ticker, "Done")
+
+        except Exception as e:
+            progress.update_status(agent_id, ticker, f"Error: {e}")
+            fundamental_analysis[ticker] = {
+                "signal": "neutral", "confidence": 0,
+                "reasoning": f"Error during analysis: {e}", "scores": {}
+            }
+
+    # ── Write to state ────────────────────────────────────────────────────
+    msg = HumanMessage(content=str(fundamental_analysis), name=agent_id)
+
+    if state.get("metadata", {}).get("show_reasoning"):
+        show_agent_reasoning(fundamental_analysis, "Fundamental Analyst Agent")
+
     state["data"]["analyst_signals"][agent_id] = fundamental_analysis
 
     progress.update_status(agent_id, None, "Done")
-    
-    return {
-        "messages": [message],
-        "data": data,
-    }
+
+    return {"messages": [msg], "data": data}

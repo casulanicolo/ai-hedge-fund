@@ -1,0 +1,143 @@
+{
+  "cached_at": "2026-03-30T08:28:05.287294",
+  "data": {
+    "ticker": "XOM",
+    "cik": "0000034088",
+    "10-Q": [
+      {
+        "form": "10-Q",
+        "date": "2025-11-03",
+        "accession": "0000034088-25-000061",
+        "document": "xom-20250930.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-08-04",
+        "accession": "0000034088-25-000042",
+        "document": "xom-20250630.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-05-05",
+        "accession": "0000034088-25-000024",
+        "document": "xom-20250331.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2024-11-04",
+        "accession": "0000034088-24-000068",
+        "document": "xom-20240930.htm"
+      }
+    ],
+    "10-K": [
+      {
+        "form": "10-K",
+        "date": "2026-02-18",
+        "accession": "0000034088-26-000045",
+        "document": "xom-20251231.htm"
+      }
+    ],
+    "form4": [
+      {
+        "form": "4",
+        "date": "2026-03-17",
+        "accession": "0000034088-26-000052",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-03",
+        "accession": "0000034088-26-000049",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-09",
+        "accession": "0000034088-26-000042",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-03",
+        "accession": "0000034088-26-000039",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-02",
+        "accession": "0000034088-26-000035",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-01-05",
+        "accession": "0000034088-26-000028",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-01-05",
+        "accession": "0000034088-26-000026",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-01-05",
+        "accession": "0000034088-26-000023",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-01-05",
+        "accession": "0000034088-26-000021",
+        "document": "xslF345X05/form4.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-01-05",
+        "accession": "0000034088-26-000019",
+        "document": "xslF345X05/form4.xml"
+      }
+    ],
+    "8-K": [
+      {
+        "form": "8-K",
+        "date": "2026-02-20",
+        "accession": "0000034088-26-000047",
+        "document": "xom-20260218.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-01-30",
+        "accession": "0000034088-26-000033",
+        "document": "xom-20260130.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-01-07",
+        "accession": "0000034088-26-000030",
+        "document": "xom-20260107.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-12-09",
+        "accession": "0000034088-25-000122",
+        "document": "xom-20251208.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-11-18",
+        "accession": "0000034088-25-000074",
+        "document": "xom-20251118.htm"
+      }
+    ],
+    "xbrl_metrics": {
+      "revenue": 332238000000,
+      "net_income": 28844000000,
+      "eps_basic": null,
+      "total_assets": 448980000000,
+      "total_debt": null,
+      "operating_cf": 51970000000
+    }
+  }
+}

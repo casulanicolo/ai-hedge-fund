@@ -1,0 +1,143 @@
+{
+  "cached_at": "2026-03-30T08:28:06.004827",
+  "data": {
+    "ticker": "BRK-B",
+    "cik": "0001067983",
+    "10-Q": [
+      {
+        "form": "10-Q",
+        "date": "2025-11-03",
+        "accession": "0001193125-25-261548",
+        "document": "brka-20250930.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-08-04",
+        "accession": "0000950170-25-101578",
+        "document": "brka-20250630.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2025-05-05",
+        "accession": "0000950170-25-063112",
+        "document": "brka-20250331.htm"
+      },
+      {
+        "form": "10-Q",
+        "date": "2024-11-04",
+        "accession": "0000950170-24-120241",
+        "document": "brka-20240930.htm"
+      }
+    ],
+    "10-K": [
+      {
+        "form": "10-K",
+        "date": "2026-03-02",
+        "accession": "0001193125-26-083899",
+        "document": "brka-20251231.htm"
+      }
+    ],
+    "form4": [
+      {
+        "form": "4",
+        "date": "2026-03-27",
+        "accession": "0001728451-26-000001",
+        "document": "xslF345X06/primary_doc.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-19",
+        "accession": "0001193125-26-116315",
+        "document": "xslF345X06/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-03-05",
+        "accession": "0001193125-26-092556",
+        "document": "xslF345X05/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-17",
+        "accession": "0001193125-26-054947",
+        "document": "xslF345X05/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2026-02-02",
+        "accession": "0001193125-26-033900",
+        "document": "xslF345X05/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2025-11-12",
+        "accession": "0001193125-25-277658",
+        "document": "xslF345X05/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2025-11-05",
+        "accession": "0001193125-25-267252",
+        "document": "xslF345X05/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2025-10-29",
+        "accession": "0001193125-25-256858",
+        "document": "xslF345X05/ownership.xml"
+      },
+      {
+        "form": "4",
+        "date": "2025-10-24",
+        "accession": "0001728451-25-000009",
+        "document": "xslF345X05/primary_doc.xml"
+      },
+      {
+        "form": "4",
+        "date": "2025-09-26",
+        "accession": "0001728451-25-000008",
+        "document": "xslF345X05/primary_doc.xml"
+      }
+    ],
+    "8-K": [
+      {
+        "form": "8-K",
+        "date": "2026-03-05",
+        "accession": "0001193125-26-092557",
+        "document": "d82599d8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2026-03-02",
+        "accession": "0001193125-26-085801",
+        "document": "d117283d8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-12-11",
+        "accession": "0001193125-25-314935",
+        "document": "d10933d8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-11-21",
+        "accession": "0001193125-25-290864",
+        "document": "d45429d8k.htm"
+      },
+      {
+        "form": "8-K",
+        "date": "2025-11-03",
+        "accession": "0001193125-25-262260",
+        "document": "d22917d8k.htm"
+      }
+    ],
+    "xbrl_metrics": {
+      "revenue": 371444000000,
+      "net_income": 66968000000,
+      "eps_basic": null,
+      "total_assets": 1222176000000,
+      "total_debt": null,
+      "operating_cf": 45969000000
+    }
+  }
+}
