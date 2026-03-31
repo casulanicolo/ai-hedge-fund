@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, register_state
 from src.utils.llm import call_llm
 from src.utils.progress import progress
+from src.utils.api_key import get_api_key_from_state
 
 
 class AswathDamodaranSignal(BaseModel):

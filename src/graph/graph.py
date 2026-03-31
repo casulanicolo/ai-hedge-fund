@@ -101,10 +101,9 @@ ANALYST_NODES: list[tuple[str, Callable]] = [
     ("michael_burry",   _import_or_stub("src.agents.michael_burry",   "michael_burry_agent",   "michael_burry")),
     ("bill_ackman",     _import_or_stub("src.agents.bill_ackman",     "bill_ackman_agent",     "bill_ackman")),
     ("cathie_wood",     _import_or_stub("src.agents.cathie_wood",     "cathie_wood_agent",     "cathie_wood")),
-    ("druckenmiller",   _import_or_stub("src.agents.druckenmiller",   "druckenmiller_agent",   "druckenmiller")),
-    ("damodaran",       _import_or_stub("src.agents.damodaran",       "damodaran_agent",       "damodaran")),
-    ("technicals",      _import_or_stub("src.agents.technicals",      "technicals_agent",      "technicals")),
-    ("fundamentals",    _import_or_stub("src.agents.fundamentals",    "fundamentals_agent",    "fundamentals")),
+    ("damodaran",       _import_or_stub("src.agents.aswath_damodaran", "aswath_damodaran_agent",       "damodaran")),
+    ("technicals",      _import_or_stub("src.agents.technicals", "technical_analyst_agent",      "technicals")),
+    ("fundamentals",    _import_or_stub("src.agents.fundamentals", "fundamentals_analyst_agent",    "fundamentals")),
     ("sentiment",       _import_or_stub("src.agents.sentiment",       "sentiment_agent",       "sentiment")),
 ]
 

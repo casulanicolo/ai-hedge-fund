@@ -1,6 +1,7 @@
 """Helper functions for LLM"""
 
 import json
+import time
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
@@ -12,7 +13,7 @@ def call_llm(
     pydantic_model: type[BaseModel],
     agent_name: str | None = None,
     state: AgentState | None = None,
-    max_retries: int = 3,
+    max_retries: int = 6,
     default_factory=None,
 ) -> BaseModel:
     """
@@ -73,6 +74,8 @@ def call_llm(
             if agent_name:
                 progress.update_status(agent_name, None, f"Error - retry {attempt + 1}/{max_retries}")
 
+            wait = 60 if "429" in str(e) else 2 ** attempt
+            time.sleep(wait)
             if attempt == max_retries - 1:
                 print(f"Error in LLM call after {max_retries} attempts: {e}")
                 # Use default_factory if provided, otherwise create a basic default

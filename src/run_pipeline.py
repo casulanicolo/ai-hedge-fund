@@ -103,6 +103,7 @@ def _build_initial_state(tickers: list, run_id: str) -> dict:
             # Richiesti dai philosophy agents (ben_graham, buffett, ecc.)
             "tickers": tickers,
             "end_date": end_date,
+            "start_date": (datetime.now(timezone.utc).replace(year=datetime.now(timezone.utc).year - 1)).strftime("%Y-%m-%d"),
             # Richiesti da prefetch e agenti core
             "prefetched_data": {},
             "analyst_signals": {},

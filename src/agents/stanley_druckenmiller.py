@@ -1,4 +1,5 @@
-﻿from src.graph.state import AgentState, show_agent_reasoning
+﻿from datetime import datetime
+from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news, get_prices, register_state
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
@@ -27,7 +28,7 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
     """
     data = state["data"]
     register_state(state)
-    start_date = data["start_date"]
+    start_date = data.get("start_date") or (datetime.now().replace(year=datetime.now().year-1)).strftime("%Y-%m-%d")
     end_date = data["end_date"]
     tickers = data["tickers"]
     analysis_data = {}
@@ -347,7 +348,7 @@ def analyze_risk_reward(financial_line_items: list, prices: list) -> dict:
       - Price Volatility
     Aims for strong upside with contained downside.
     """
-    if not financial_line_items or not prices:
+    if not financial_line_items or (hasattr(prices, "empty") and prices.empty) or (not hasattr(prices, "empty") and not prices):
         return {"score": 0, "details": "Insufficient data for risk-reward analysis"}
 
     details = []
