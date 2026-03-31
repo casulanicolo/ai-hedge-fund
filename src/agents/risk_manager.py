@@ -1,10 +1,11 @@
 """
-risk_manager.py — Athanor Alpha Phase 3.4
+risk_manager.py — Athanor Alpha Phase 3.5
 Reads all analyst signals from state, computes:
   - Correlation matrix (10 tickers)
   - Sector concentration
   - Parametric VaR
   - Max drawdown limit check
+  - ATR-based trade levels (entry, stop loss, take profit) for BUY/SELL tickers
 Writes risk_report to state. Does NOT block signals — only annotates.
 """
 
@@ -42,6 +43,11 @@ MAX_SECTOR_PCT = 0.60          # >60% of bullish signals in one sector → warni
 MAX_PORTFOLIO_VAR = 0.04       # >4% daily VaR → warning
 MAX_DRAWDOWN_LIMIT = 0.15      # >15% estimated drawdown → warning
 MAX_SINGLE_TICKER_PCT = 0.25   # single ticker >25% sizing → warning
+
+# ── Trade level parameters ─────────────────────────────────────────────────────
+ATR_PERIOD  = 14    # ATR lookback (Wilder's smoothing)
+ATR_SL_MULT = 2.0   # Stop Loss = entry ± 2×ATR
+ATR_TP_MULT = 4.0   # Take Profit = entry ∓ 4×ATR  →  R/R = 1:2
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -165,6 +171,99 @@ def _sector_concentration(bullish_tickers: list[str]) -> dict[str, float]:
 
     total = len(bullish_tickers)
     return {s: round(c / total, 3) for s, c in counts.items()}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ATR-based trade levels
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_atr(ohlcv: pd.DataFrame, period: int = ATR_PERIOD) -> float:
+    """
+    Compute ATR using Wilder's EMA smoothing (alpha = 1/period).
+    Returns the latest ATR value, or 0.0 if data is insufficient.
+    """
+    if ohlcv is None or len(ohlcv) < period + 1:
+        return 0.0
+    try:
+        high  = ohlcv["High"]
+        low   = ohlcv["Low"]
+        close = ohlcv["Close"]
+        tr = pd.concat(
+            [high - low,
+             (high - close.shift(1)).abs(),
+             (low  - close.shift(1)).abs()],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        return float(atr.iloc[-1])
+    except Exception:
+        return 0.0
+
+
+def _compute_trade_levels(
+    state: AgentState,
+    tickers: list[str],
+    agg: dict[str, dict],
+) -> dict[str, dict]:
+    """
+    For each ticker with bullish or bearish net signal, compute operational
+    trade levels from the ATR of the last ATR_PERIOD candles:
+
+      BUY  → entry = last close, SL = entry − 2×ATR, TP = entry + 4×ATR
+      SELL → entry = last close, SL = entry + 2×ATR, TP = entry − 4×ATR
+
+    R/R ratio is always ATR_TP_MULT / ATR_SL_MULT = 2.0.
+    Tickers with neutral signal or missing OHLCV are skipped.
+    """
+    prefetched: dict[str, Any] = state.get("data", {}).get("prefetched_data", {})
+    result: dict[str, dict] = {}
+
+    for ticker in tickers:
+        net_signal = agg.get(ticker, {}).get("net_signal", "neutral")
+        if net_signal == "neutral":
+            continue
+
+        payload = prefetched.get(ticker, {})
+        ohlcv   = payload.get("ohlcv_daily")
+
+        # Normalise to DataFrame if stored as dict-of-lists
+        if isinstance(ohlcv, dict) and "Close" in ohlcv:
+            try:
+                ohlcv = pd.DataFrame(ohlcv)
+            except Exception:
+                continue
+
+        if not isinstance(ohlcv, pd.DataFrame) or ohlcv.empty:
+            continue
+
+        try:
+            entry = round(float(ohlcv["Close"].iloc[-1]), 2)
+        except Exception:
+            continue
+
+        atr = _compute_atr(ohlcv)
+        if atr <= 0.0:
+            continue
+
+        if net_signal == "bullish":
+            sl        = round(entry - ATR_SL_MULT * atr, 2)
+            tp        = round(entry + ATR_TP_MULT * atr, 2)
+            direction = "long"
+        else:  # bearish
+            sl        = round(entry + ATR_SL_MULT * atr, 2)
+            tp        = round(entry - ATR_TP_MULT * atr, 2)
+            direction = "short"
+
+        result[ticker] = {
+            "direction":   direction,
+            "entry_price": entry,
+            "stop_loss":   sl,
+            "take_profit": tp,
+            "atr":         round(atr, 4),
+            "rr_ratio":    round(ATR_TP_MULT / ATR_SL_MULT, 1),  # 2.0
+        }
+
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -326,7 +425,11 @@ def risk_manager_agent(state: AgentState) -> dict:
                     ticker_flags[t1].append(f"High correlation with {t2} ({c:.2f})")
                     ticker_flags[t2].append(f"High correlation with {t1} ({c:.2f})")
 
-    # ── 9. Assemble risk report ────────────────────────────────────────────
+    # ── 9. ATR-based trade levels (entry / SL / TP) ───────────────────────
+    progress.update_status(AGENT_ID, None, "Computing ATR trade levels")
+    trade_levels = _compute_trade_levels(state, tickers, agg)
+
+    # ── 10. Assemble risk report ───────────────────────────────────────────
     risk_report = {
         "signal_summary": agg,
         "bullish_tickers": bullish_tickers,
@@ -337,27 +440,29 @@ def risk_manager_agent(state: AgentState) -> dict:
         "max_drawdown_estimate": max_dd,
         "correlation_matrix": corr_matrix,
         "ticker_flags": ticker_flags,
+        "trade_levels": trade_levels,
         "warnings": warnings,
         "risk_ok": len(warnings) == 0,
     }
 
-    # ── 10. Write to state ────────────────────────────────────────────────
+    # ── 11. Write to state ────────────────────────────────────────────────
     data["risk_report"] = risk_report
     data["analyst_signals"][AGENT_ID] = {
         "signal": "neutral",  # risk manager does not emit a trading signal
         "confidence": 1.0,
         "reasoning": f"Risk check complete. Warnings: {len(warnings)}. "
                      f"Daily VaR 95%: {daily_var*100:.1f}%. "
-                     f"Max DD estimate: {max_dd*100:.1f}%.",
+                     f"Max DD estimate: {max_dd*100:.1f}%. "
+                     f"Trade levels computed for {len(trade_levels)} tickers.",
     }
 
-    # ── 11. Show reasoning ────────────────────────────────────────────────
+    # ── 12. Show reasoning ────────────────────────────────────────────────
     show_agent_reasoning(risk_report, AGENT_ID)
 
     summary = (
         f"Risk Manager | {len(bullish_tickers)} bullish / {len(bearish_tickers)} bearish "
         f"| VaR {daily_var*100:.1f}% | MaxDD {max_dd*100:.1f}% "
-        f"| Warnings: {len(warnings)}"
+        f"| Trade levels: {len(trade_levels)} | Warnings: {len(warnings)}"
     )
     progress.update_status(AGENT_ID, None, "Done" if not warnings else f"⚠ {len(warnings)} warnings")
 

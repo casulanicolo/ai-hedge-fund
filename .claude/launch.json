@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Pipeline (full run, all tickers)",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "src.run_pipeline"],
+      "port": 8000
+    },
+    {
+      "name": "Pipeline (dry run — no email)",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "src.run_pipeline", "--no-email"],
+      "port": 8001
+    },
+    {
+      "name": "Monitor Daemon",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "src.monitor.daemon"],
+      "port": 8002
+    },
+    {
+      "name": "Outcome Tracker",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "src.feedback.outcome_tracker"],
+      "port": 8003
+    },
+    {
+      "name": "Main CLI (interactive)",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["src/main.py"],
+      "port": 8004
+    }
+  ]
+}

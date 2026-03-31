@@ -1,14 +1,17 @@
 """
-portfolio_manager.py — Athanor Alpha Phase 3.4
+portfolio_manager.py — Athanor Alpha Phase 3.5
 Reads analyst_signals + risk_report from state.
 Produces per-ticker recommendations:
-  {ticker, action, sizing_pct, conviction, reasoning}
+  {ticker, action, sizing_pct, conviction, reasoning,
+   entry_price, stop_loss, take_profit, size_usd, rr_ratio, consensus}
 No execution — output only. Writes to state["data"]["portfolio_recommendations"].
 """
 
 from __future__ import annotations
 
 import json
+import os
+from math import floor
 from typing import Any
 
 from langchain_core.messages import HumanMessage
@@ -29,6 +32,11 @@ CONVICTION_SCALE = {          # how conviction maps to base sizing
     "medium": 9.0,
     "low":    4.0,
 }
+
+# ── Dollar-risk parameters (read from .env, with sensible defaults) ────────────
+PORTFOLIO_SIZE_USD = float(os.getenv("PORTFOLIO_SIZE_USD", "10000"))
+RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.01"))   # 1% per trade
+MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "5"))          # max open positions
 
 # Agents excluded from signal aggregation (they don't emit trading signals)
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
@@ -230,6 +238,101 @@ def _normalise_sizing(recommendations: list[dict]) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Trade-level enrichment and trade selection
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _select_top_trades(pre_recs: list[dict]) -> list[dict]:
+    """
+    Keep at most MAX_ACTIVE_TRADES active positions (BUY + SELL combined).
+    Candidates are ranked by conviction descending.
+    Excess positions are demoted to HOLD (sizing_pct = 0).
+    """
+    active = [r for r in pre_recs if r["action"] in ("BUY", "SELL")]
+    hold   = [r for r in pre_recs if r["action"] == "HOLD"]
+
+    active.sort(key=lambda r: r["conviction"], reverse=True)
+    top    = active[:MAX_ACTIVE_TRADES]
+    demoted = active[MAX_ACTIVE_TRADES:]
+
+    for r in demoted:
+        r["action"]     = "HOLD"
+        r["sizing_pct"] = 0.0
+
+    return top + demoted + hold
+
+
+def _enrich_with_trade_levels(
+    pre_recs: list[dict],
+    risk_report: dict,
+    weighted: dict[str, dict],
+) -> list[dict]:
+    """
+    For each BUY/SELL recommendation, attach operational trade levels from
+    risk_report["trade_levels"] and compute dollar position size.
+
+    Formula:
+        risk_amount   = PORTFOLIO_SIZE_USD × RISK_PER_TRADE_PCT   (e.g. $100)
+        risk_per_share = abs(entry_price − stop_loss)              (= 2×ATR)
+        shares        = floor(risk_amount / risk_per_share)
+        size_usd      = shares × entry_price
+        (capped at PORTFOLIO_SIZE_USD × MAX_SINGLE_POSITION / 100)
+
+    Also attaches a human-readable consensus string, e.g. "7/9 bullish".
+    Tickers without trade level data get None values (HOLD tickers always get None).
+    """
+    trade_levels: dict[str, dict] = risk_report.get("trade_levels", {})
+    max_position_usd = PORTFOLIO_SIZE_USD * MAX_SINGLE_POSITION / 100.0
+
+    for rec in pre_recs:
+        ticker = rec["ticker"]
+        action = rec["action"]
+        agg    = weighted.get(ticker, {})
+        n      = agg.get("n_agents", 0)
+
+        # Consensus string
+        if action == "BUY":
+            votes = agg.get("bull_agents", [])
+            rec["consensus"] = f"{len(votes)}/{n} bullish" if n else "—"
+        elif action == "SELL":
+            votes = agg.get("bear_agents", [])
+            rec["consensus"] = f"{len(votes)}/{n} bearish" if n else "—"
+        else:
+            rec["consensus"] = f"{n} agents / mixed"
+
+        # Trade levels (only for actionable tickers)
+        levels = trade_levels.get(ticker) if action in ("BUY", "SELL") else None
+
+        if levels:
+            entry = levels["entry_price"]
+            sl    = levels["stop_loss"]
+            tp    = levels["take_profit"]
+            rr    = levels["rr_ratio"]
+
+            risk_per_share = abs(entry - sl)
+            risk_amount    = PORTFOLIO_SIZE_USD * RISK_PER_TRADE_PCT
+
+            if risk_per_share > 0:
+                shares   = floor(risk_amount / risk_per_share)
+                size_usd = round(min(shares * entry, max_position_usd), 0)
+            else:
+                size_usd = 0.0
+
+            rec["entry_price"] = entry
+            rec["stop_loss"]   = sl
+            rec["take_profit"] = tp
+            rec["size_usd"]    = size_usd
+            rec["rr_ratio"]    = rr
+        else:
+            rec["entry_price"] = None
+            rec["stop_loss"]   = None
+            rec["take_profit"] = None
+            rec["size_usd"]    = None
+            rec["rr_ratio"]    = None
+
+    return pre_recs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LLM reasoning per ticker
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -245,13 +348,21 @@ def _build_llm_prompt(
     for t in tickers:
         agg = weighted.get(t, {})
         pre = next((r for r in pre_recs if r["ticker"] == t), {})
+        entry = pre.get("entry_price")
+        sl    = pre.get("stop_loss")
+        tp    = pre.get("take_profit")
+        sz    = pre.get("size_usd")
+        levels_str = (
+            f"entry={entry}, SL={sl}, TP={tp}, size=${sz:.0f}"
+            if entry is not None else "no trade levels"
+        )
         ticker_block += (
             f"\n{t}: net_score={agg.get('net_score', 0):.3f}, "
             f"avg_confidence={agg.get('avg_confidence', 0):.2f}, "
-            f"bull_agents={len(agg.get('bull_agents', []))}, "
-            f"bear_agents={len(agg.get('bear_agents', []))}, "
+            f"consensus={pre.get('consensus','—')}, "
             f"action={pre.get('action','?')}, sizing={pre.get('sizing_pct', 0)}%, "
-            f"conviction={pre.get('conviction', 0):.2f}"
+            f"conviction={pre.get('conviction', 0):.2f}, "
+            f"{levels_str}"
         )
 
     return f"""You are the Portfolio Manager of Athanor Alpha, a quantitative AI hedge fund.
@@ -329,7 +440,12 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     # Normalise sizing so BUY positions sum to ≤100%
     pre_recs = _normalise_sizing(pre_recs)
 
-    # ── 3. LLM for reasoning text ─────────────────────────────────────────
+    # ── 3. Select top trades and enrich with operational levels ───────────
+    progress.update_status(AGENT_ID, None, "Selecting top trades and enriching with ATR levels")
+    pre_recs = _select_top_trades(pre_recs)
+    pre_recs = _enrich_with_trade_levels(pre_recs, risk_report, weighted)
+
+    # ── 5. LLM for reasoning text ─────────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Generating reasoning via LLM")
     prompt = _build_llm_prompt(tickers, weighted, risk_report, pre_recs)
 
@@ -367,7 +483,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
                     f"action {rec['action']} at {rec['sizing_pct']}%."
                 )
 
-    # ── 4. Final output ───────────────────────────────────────────────────
+    # ── 6. Final output ───────────────────────────────────────────────────
     portfolio_recommendations = {
         "recommendations": pre_recs,
         "portfolio_summary": portfolio_summary,

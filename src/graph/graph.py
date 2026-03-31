@@ -17,8 +17,6 @@ Topology
       ├─► michael_burry_node     │  (LangGraph fan-out)
       ├─► bill_ackman_node       │
       ├─► cathie_wood_node       │
-      ├─► druckenmiller_node     │
-      ├─► damodaran_node         │
       ├─► technicals_node        │
       ├─► fundamentals_node      │
       └─► sentiment_node        ─┘
@@ -101,7 +99,6 @@ ANALYST_NODES: list[tuple[str, Callable]] = [
     ("michael_burry",   _import_or_stub("src.agents.michael_burry",   "michael_burry_agent",   "michael_burry")),
     ("bill_ackman",     _import_or_stub("src.agents.bill_ackman",     "bill_ackman_agent",     "bill_ackman")),
     ("cathie_wood",     _import_or_stub("src.agents.cathie_wood",     "cathie_wood_agent",     "cathie_wood")),
-    ("damodaran",       _import_or_stub("src.agents.aswath_damodaran", "aswath_damodaran_agent",       "damodaran")),
     ("technicals",      _import_or_stub("src.agents.technicals", "technical_analyst_agent",      "technicals")),
     ("fundamentals",    _import_or_stub("src.agents.fundamentals", "fundamentals_analyst_agent",    "fundamentals")),
     ("sentiment",       _import_or_stub("src.agents.sentiment",       "sentiment_agent",       "sentiment")),
