@@ -5,8 +5,8 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 from colorama import Fore, Style, init
 import questionary
-from src.agents.portfolio_manager import portfolio_management_agent
-from src.agents.risk_manager import risk_management_agent
+from src.agents.portfolio_manager import portfolio_manager_agent as portfolio_management_agent
+from src.agents.risk_manager import risk_manager_agent as risk_management_agent
 from src.graph.state import AgentState
 from src.utils.display import print_trading_output
 from src.utils.analysts import ANALYST_ORDER, get_analyst_nodes

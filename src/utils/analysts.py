@@ -10,7 +10,7 @@ from src.agents.fundamentals import fundamentals_analyst_agent
 from src.agents.michael_burry import michael_burry_agent
 from src.agents.phil_fisher import phil_fisher_agent
 from src.agents.peter_lynch import peter_lynch_agent
-from src.agents.sentiment import sentiment_analyst_agent
+from src.agents.sentiment import sentiment_agent as sentiment_analyst_agent
 from src.agents.stanley_druckenmiller import stanley_druckenmiller_agent
 from src.agents.technicals import technical_analyst_agent
 from src.agents.valuation import valuation_analyst_agent

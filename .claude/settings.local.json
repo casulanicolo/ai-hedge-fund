@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(.venv/Scripts/python.exe -c \"from src.walk_forward_backtest import main; print\\(''CLI OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"from src.backtester import run_backtest; print\\(''backtester OK''\\)\")",
+      "Bash(wc -l /c/Users/tomma/Documents/athanor-alpha/src/agents/*.py)",
+      "Bash(find src:*)",
+      "Bash(wc -l /c/Users/tomma/Documents/athanor-alpha/src/backtesting/*.py)",
+      "Bash(grep -l \"def.*_agent\" /c/Users/tomma/Documents/athanor-alpha/src/agents/*.py)",
+      "Bash(done)"
     ]
   }
 }
