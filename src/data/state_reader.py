@@ -69,6 +69,28 @@ def get_ohlcv_5m(state: dict, ticker: str) -> Optional[pd.DataFrame]:
     return df
 
 
+def get_ohlcv_weekly(state: dict, ticker: str) -> Optional[pd.DataFrame]:
+    """Weekly OHLCV DataFrame (2 years). Index = Date."""
+    payload = _get_ticker_payload(state, ticker)
+    if payload is None:
+        return None
+    df = payload.get("ohlcv_weekly")
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        return None
+    return df
+
+
+def get_ohlcv_4h(state: dict, ticker: str) -> Optional[pd.DataFrame]:
+    """4-hour OHLCV DataFrame (60 days). Index = Datetime."""
+    payload = _get_ticker_payload(state, ticker)
+    if payload is None:
+        return None
+    df = payload.get("ohlcv_4h")
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        return None
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Company info
 # ---------------------------------------------------------------------------

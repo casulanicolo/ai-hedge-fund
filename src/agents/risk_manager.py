@@ -20,11 +20,13 @@ from langchain_core.messages import HumanMessage
 
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
+from src.indicators.regime_detector import detect_macro_regime
 
 AGENT_ID = "risk_manager"
 
 # ── Sector map (hardcoded for the 10-ticker universe) ─────────────────────────
 SECTOR_MAP: dict[str, str] = {
+    # Large-cap US
     "AAPL": "Technology",
     "MSFT": "Technology",
     "GOOGL": "Technology",
@@ -35,6 +37,16 @@ SECTOR_MAP: dict[str, str] = {
     "JPM": "Financials",
     "V": "Financials",
     "UNH": "Healthcare",
+    # High-beta stocks
+    "MSTR": "Crypto-Proxy",
+    "COIN": "Crypto-Proxy",
+    "SMCI": "Technology",
+    "MELI": "Consumer Discretionary",
+    # Crypto
+    "BTC-USD": "Crypto",
+    "ETH-USD": "Crypto",
+    "SOL-USD": "Crypto",
+    "BNB-USD": "Crypto",
 }
 
 # ── Risk thresholds ────────────────────────────────────────────────────────────
@@ -104,9 +116,12 @@ def _correlation_matrix(returns: pd.DataFrame) -> dict:
     return corr.to_dict()
 
 
-def _parametric_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
+def _historical_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
     """
-    Parametric (Gaussian) portfolio VaR at VAR_CONFIDENCE level.
+    Historical (empirical) portfolio VaR at VAR_CONFIDENCE level.
+    Usa il percentile empirico dei return storici — più accurato del VaR
+    gaussiano in presenza di fat tails (crash, volatilità estrema).
+
     weights: {ticker: weight_fraction}  (must sum to 1)
     Returns daily VaR as a positive fraction (e.g. 0.032 = 3.2%).
     """
@@ -120,16 +135,13 @@ def _parametric_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
     w = np.array([weights[t] for t in tickers])
     w = w / w.sum()  # re-normalise
 
-    mu = returns[tickers].mean().values
-    cov = returns[tickers].cov().values
+    # Portfolio return series (weighted sum of asset returns)
+    port_returns = returns[tickers].values @ w
 
-    port_mean = float(np.dot(w, mu))
-    port_std = float(np.sqrt(w @ cov @ w))
-
-    # z-score for one-tailed confidence level
-    from scipy.stats import norm
-    z = norm.ppf(VAR_CONFIDENCE)
-    var = -(port_mean - z * port_std)
+    # VaR = negative of the (1 - confidence) percentile
+    # Es. 95% VaR → 5° percentile della distribuzione dei rendimenti
+    percentile = (1 - VAR_CONFIDENCE) * 100
+    var = -float(np.percentile(port_returns, percentile))
     return max(0.0, round(var, 4))
 
 
@@ -379,10 +391,10 @@ def risk_manager_agent(state: AgentState) -> dict:
     sector_fractions = _sector_concentration(bullish_tickers)
     concentrated_sectors = {s: f for s, f in sector_fractions.items() if f > MAX_SECTOR_PCT}
 
-    # ── 5. VaR ────────────────────────────────────────────────────────────
-    progress.update_status(AGENT_ID, None, "Computing parametric VaR")
+    # ── 5. VaR (Historical / empirical — più accurato con fat tails) ─────────
+    progress.update_status(AGENT_ID, None, "Computing historical VaR")
     try:
-        daily_var = _parametric_var(returns, eq_weights)
+        daily_var = _historical_var(returns, eq_weights)
     except Exception:
         daily_var = 0.0
 
@@ -429,6 +441,18 @@ def risk_manager_agent(state: AgentState) -> dict:
     progress.update_status(AGENT_ID, None, "Computing ATR trade levels")
     trade_levels = _compute_trade_levels(state, tickers, agg)
 
+    # ── 9b. Macro regime (VIX) ────────────────────────────────────────────
+    progress.update_status(AGENT_ID, None, "Fetching VIX macro regime")
+    try:
+        macro_regime = detect_macro_regime()
+    except Exception:
+        macro_regime = {"macro_regime": "CAUTION", "vix": None, "sizing_multiplier": 0.7, "description": "VIX unavailable"}
+
+    if macro_regime["macro_regime"] == "RISK_OFF":
+        warnings.append(f"MACRO RISK_OFF: {macro_regime['description']} — evitare nuovi long.")
+    elif macro_regime["macro_regime"] == "CAUTION":
+        warnings.append(f"MACRO CAUTION: {macro_regime['description']}")
+
     # ── 10. Assemble risk report ───────────────────────────────────────────
     risk_report = {
         "signal_summary": agg,
@@ -441,6 +465,7 @@ def risk_manager_agent(state: AgentState) -> dict:
         "correlation_matrix": corr_matrix,
         "ticker_flags": ticker_flags,
         "trade_levels": trade_levels,
+        "macro_regime": macro_regime,
         "warnings": warnings,
         "risk_ok": len(warnings) == 0,
     }

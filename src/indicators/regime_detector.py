@@ -2,7 +2,68 @@
 src/indicators/regime_detector.py
 Classifica il regime di mercato corrente in TRENDING, RANGING o VOLATILE
 usando i valori dello snapshot degli indicatori tecnici.
+
+Aggiunge anche detect_macro_regime() che classifica il regime macro
+in base al VIX (RISK_ON / CAUTION / RISK_OFF).
 """
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def detect_macro_regime() -> dict:
+    """
+    Scarica il VIX da yfinance e classifica il regime macro:
+      - RISK_ON   (VIX < 20): mercato tranquillo, sizing normale
+      - CAUTION   (VIX 20-30): volatilità elevata, sizing ridotto del 30%
+      - RISK_OFF  (VIX > 30): paura/crisi, evitare nuovi long
+
+    Returns:
+        dict con:
+          - macro_regime:    "RISK_ON" | "CAUTION" | "RISK_OFF"
+          - vix:             float — ultimo valore VIX
+          - sizing_multiplier: float — 1.0 / 0.7 / 0.3
+          - description:     str — testo leggibile
+    """
+    try:
+        import yfinance as yf
+        vix_data = yf.download("^VIX", period="5d", interval="1d", progress=False, auto_adjust=True)
+        if vix_data is None or vix_data.empty:
+            raise ValueError("VIX data empty")
+        # Flatten multi-level columns if needed
+        import pandas as pd
+        if isinstance(vix_data.columns, pd.MultiIndex):
+            vix_data.columns = vix_data.columns.get_level_values(0)
+        vix = float(vix_data["Close"].dropna().iloc[-1])
+    except Exception as e:
+        logger.warning("VIX fetch failed (%s) — defaulting to CAUTION", e)
+        return {
+            "macro_regime": "CAUTION",
+            "vix": None,
+            "sizing_multiplier": 0.7,
+            "description": "VIX non disponibile — regime CAUTION per precauzione.",
+        }
+
+    if vix < 20:
+        regime = "RISK_ON"
+        multiplier = 1.0
+        desc = f"VIX {vix:.1f} < 20 — mercato tranquillo, sizing pieno."
+    elif vix <= 30:
+        regime = "CAUTION"
+        multiplier = 0.7
+        desc = f"VIX {vix:.1f} tra 20-30 — volatilità elevata, sizing ridotto al 70%."
+    else:
+        regime = "RISK_OFF"
+        multiplier = 0.3
+        desc = f"VIX {vix:.1f} > 30 — paura/crisi, sizing ridotto al 30%."
+
+    return {
+        "macro_regime": regime,
+        "vix": round(vix, 2),
+        "sizing_multiplier": multiplier,
+        "description": desc,
+    }
 
 
 def detect_regime(snapshot: dict) -> dict:

@@ -27,11 +27,9 @@ AGENT_ID = "portfolio_manager"
 MAX_SINGLE_POSITION = 20.0    # % of portfolio, hard cap per ticker
 MIN_SINGLE_POSITION = 2.0     # % below this → skip (not worth it)
 TOTAL_GROSS_BUDGET = 100.0    # we size to 100% gross, human decides leverage
-CONVICTION_SCALE = {          # how conviction maps to base sizing
-    "high":   15.0,
-    "medium": 9.0,
-    "low":    4.0,
-}
+KELLY_FRACTION = 0.25         # Quarter-Kelly per sicurezza (f/4)
+CORR_PENALTY_THRESHOLD = 0.70 # Correlazione oltre cui ridurre sizing del 30%
+CORR_PENALTY_FACTOR = 0.70    # Sizing ridotto a 70% se correlazione alta
 
 # ── Dollar-risk parameters (read from .env, with sensible defaults) ────────
 PORTFOLIO_SIZE_USD = float(os.getenv("PORTFOLIO_SIZE_USD", "10000"))
@@ -207,6 +205,25 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
 # Sizing logic (no LLM needed here — pure math)
 # ══════════════════════════════════════════════════════════════════════════
 
+def _kelly_sizing(edge: float, rr_ratio: float) -> float:
+    """
+    Fractional Kelly Criterion.
+    edge = probabilità stimata di successo (consensus_score 0-1)
+    rr_ratio = reward/risk ratio (es. 2.0 = TP è 2× lo SL)
+    Returns sizing % di portafoglio (Quarter-Kelly applicato).
+    """
+    if rr_ratio <= 0 or edge <= 0:
+        return 0.0
+    # Kelly formula: f = (edge × odds - (1 - edge)) / odds
+    # dove odds = rr_ratio (guadagno per unità rischiata)
+    kelly_f = (edge * rr_ratio - (1.0 - edge)) / rr_ratio
+    kelly_f = max(0.0, kelly_f)
+    # Quarter-Kelly per sicurezza (riduce rischio di ruin)
+    sizing_fraction = kelly_f * KELLY_FRACTION
+    # Converti da frazione di portafoglio a % (es. 0.15 → 15%)
+    return round(sizing_fraction * 100.0, 1)
+
+
 def _compute_sizing(
     ticker: str,
     agg: dict,
@@ -214,7 +231,8 @@ def _compute_sizing(
 ) -> tuple[float, float, str]:
     """
     Returns (sizing_pct, conviction_score, action).
-    sizing_pct is BEFORE normalisation across portfolio.
+    Usa Fractional Kelly Criterion + penalità VaR + regime VIX.
+    sizing_pct è BEFORE normalisation across portfolio.
     """
     net_score = agg.get("net_score", 0.0)
     avg_conf = agg.get("avg_confidence", 0.5)
@@ -223,33 +241,44 @@ def _compute_sizing(
     # Conviction: |net_score| × avg_confidence → [0, 1]
     conviction = min(1.0, abs(net_score) * avg_conf * 2.0)
 
-    # Base size from conviction tier
-    if conviction >= 0.60:
-        base_size = CONVICTION_SCALE["high"]
-    elif conviction >= 0.35:
-        base_size = CONVICTION_SCALE["medium"]
-    else:
-        base_size = CONVICTION_SCALE["low"]
-
-    # Risk penalty: reduce sizing if ticker has warnings
-    ticker_flags = risk_report.get("ticker_flags", {}).get(ticker, [])
-    risk_penalty = 0.8 if ticker_flags else 1.0
-
-    # Global VaR penalty
-    daily_var = risk_report.get("daily_var_95", 0.0)
-    if daily_var > 0.04:
-        risk_penalty *= 0.75
-
-    sizing = base_size * risk_penalty
-
+    # Determina azione prima del sizing
     if net_signal == "bullish":
         action = "BUY"
     elif net_signal == "bearish":
         action = "SELL"
-        sizing = min(sizing, 10.0)  # cap short sizing
     else:
-        action = "HOLD"
-        sizing = 0.0
+        return 0.0, round(conviction, 3), "HOLD"
+
+    # ── Kelly sizing ────────────────────────────────────────────────────────
+    # edge = conviction (proxy di win probability), rr_ratio da trade levels
+    trade_levels = risk_report.get("trade_levels", {}).get(ticker, {})
+    rr_ratio = float(trade_levels.get("rr_ratio", 2.0))
+    edge = conviction  # conviction è già normalizzata 0-1
+
+    sizing = _kelly_sizing(edge, rr_ratio)
+
+    # Fallback se Kelly dà 0 (segnale debole): usa floor minimo
+    if sizing < MIN_SINGLE_POSITION and conviction >= 0.15:
+        sizing = MIN_SINGLE_POSITION
+
+    # ── Penalità rischio ────────────────────────────────────────────────────
+    ticker_flags = risk_report.get("ticker_flags", {}).get(ticker, [])
+    risk_penalty = 0.8 if ticker_flags else 1.0
+
+    daily_var = risk_report.get("daily_var_95", 0.0)
+    if daily_var > 0.04:
+        risk_penalty *= 0.75
+
+    # ── Macro regime VIX multiplier ─────────────────────────────────────────
+    macro = risk_report.get("macro_regime", {})
+    vix_multiplier = float(macro.get("sizing_multiplier", 1.0))
+    risk_penalty *= vix_multiplier
+
+    sizing = sizing * risk_penalty
+
+    # Cap short sizing
+    if action == "SELL":
+        sizing = min(sizing, 10.0)
 
     sizing = round(min(sizing, MAX_SINGLE_POSITION), 1)
     conviction = round(conviction, 3)
@@ -257,11 +286,49 @@ def _compute_sizing(
     return sizing, conviction, action
 
 
-def _normalise_sizing(recommendations: list[dict]) -> list[dict]:
+def _apply_correlation_penalty(
+    recommendations: list[dict],
+    risk_report: dict,
+) -> list[dict]:
+    """
+    Riduce il sizing dei ticker altamente correlati per evitare concentrazione.
+    Ordina i BUY per conviction decrescente; per ogni coppia con corr > threshold,
+    il secondo ticker (conviction minore) viene penalizzato del 30%.
+    """
+    corr_matrix = risk_report.get("correlation_matrix", {})
+    if not corr_matrix:
+        return recommendations
+
+    buys = sorted(
+        [r for r in recommendations if r["action"] == "BUY"],
+        key=lambda r: r["conviction"],
+        reverse=True,
+    )
+
+    penalized: set[str] = set()
+
+    for i, r1 in enumerate(buys):
+        for r2 in buys[i + 1:]:
+            if r2["ticker"] in penalized:
+                continue
+            c = corr_matrix.get(r1["ticker"], {}).get(r2["ticker"], 0.0)
+            if abs(c) > CORR_PENALTY_THRESHOLD:
+                r2["sizing_pct"] = round(r2["sizing_pct"] * CORR_PENALTY_FACTOR, 1)
+                penalized.add(r2["ticker"])
+
+    return recommendations
+
+
+def _normalise_sizing(recommendations: list[dict], risk_report: dict | None = None) -> list[dict]:
     """
     Scale sizing_pct so that BUY positions sum to at most TOTAL_GROSS_BUDGET.
+    Applica correlation penalty prima della normalizzazione.
     Remove positions below MIN_SINGLE_POSITION.
     """
+    # Applica penalità correlazione
+    if risk_report:
+        recommendations = _apply_correlation_penalty(recommendations, risk_report)
+
     buys = [r for r in recommendations if r["action"] == "BUY" and r["sizing_pct"] >= MIN_SINGLE_POSITION]
     others = [r for r in recommendations if r not in buys]
 
@@ -492,8 +559,8 @@ def portfolio_manager_agent(state: AgentState) -> dict:
             "reasoning": "",  # filled by LLM
         })
 
-    # Normalise sizing so BUY positions sum to ≤100%
-    pre_recs = _normalise_sizing(pre_recs)
+    # Normalise sizing so BUY positions sum to ≤100% (with correlation penalty)
+    pre_recs = _normalise_sizing(pre_recs, risk_report)
 
     # ── 3. Select top trades and enrich with operational levels ─────────
     progress.update_status(AGENT_ID, None, "Selecting top trades and enriching with ATR levels")

@@ -1,11 +1,20 @@
-﻿tickers:
+tickers:
+  # ── US Large-cap Tech (alpha difficile ma liquidi) ────────────────────────
   - AAPL   # Apple - Tech
   - MSFT   # Microsoft - Tech
-  - GOOGL  # Alphabet - Tech
-  - AMZN   # Amazon - Consumer/Cloud
   - NVDA   # Nvidia - Semiconductors
-  - JPM    # JPMorgan - Finance
-  - JNJ    # Johnson & Johnson - Healthcare
-  - XOM    # ExxonMobil - Energy
-  - BRK-B  # Berkshire Hathaway - Conglomerate
-  - SPY    # S&P 500 ETF - Benchmark
+
+  # ── High-beta / High-volatility stocks ───────────────────────────────────
+  - TSLA   # Tesla - Consumer/EV (beta ~1.8)
+  - MSTR   # MicroStrategy - BTC proxy stock (beta ~3.5)
+  - COIN   # Coinbase - Crypto exchange (beta ~2.5)
+  - SMCI   # Super Micro Computer - AI infrastructure (alta volatilità)
+  - MELI   # MercadoLibre - EM e-commerce growth
+
+  # ── Crypto (via yfinance, suffisso -USD) ─────────────────────────────────
+  - BTC-USD  # Bitcoin
+  - ETH-USD  # Ethereum
+  - SOL-USD  # Solana
+
+benchmark:
+  - SPY    # S&P 500 ETF — usato solo per alpha/beta, non tradato

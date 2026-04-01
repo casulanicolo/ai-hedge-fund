@@ -19,6 +19,7 @@ from src.agents.rakesh_jhunjhunwala import rakesh_jhunjhunwala_agent
 from src.agents.mohnish_pabrai import mohnish_pabrai_agent
 from src.agents.news_sentiment import news_sentiment_agent
 from src.agents.growth_agent import growth_analyst_agent
+from src.agents.breakout_momentum import breakout_momentum_agent
 
 # Define analyst configuration - single source of truth
 ANALYST_CONFIG = {
@@ -165,6 +166,14 @@ ANALYST_CONFIG = {
         "agent_func": valuation_analyst_agent,
         "type": "analyst",
         "order": 16,
+    },
+    "breakout_momentum": {
+        "display_name": "Breakout & Volume Surge",
+        "description": "Momentum Breakout Specialist",
+        "investing_style": "Detects resistance breakouts confirmed by anomalous volume (>2x average) and ATR expansion. Identifies institutional money flows via price-volume confirmation. Ignores fundamentals — pure price action.",
+        "agent_func": breakout_momentum_agent,
+        "type": "analyst",
+        "order": 17,
     },
 }
 

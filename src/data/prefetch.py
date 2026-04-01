@@ -22,6 +22,8 @@ Output shape
 
   {
     "ohlcv_daily":    pd.DataFrame  (index=Date, cols=Open/High/Low/Close/Volume)
+    "ohlcv_weekly":   pd.DataFrame  (index=Date, weekly candles — 2 years)
+    "ohlcv_4h":       pd.DataFrame  (index=Datetime, 4h candles — 60 days)
     "ohlcv_5m":       pd.DataFrame  (index=Datetime)
     "info":           dict
     "income_stmt":    pd.DataFrame
@@ -136,6 +138,12 @@ class DataPrefetcher:
             # --- OHLCV daily (1 year) ---
             ohlcv_daily = self._safe_download(ticker, period="1y", interval="1d")
 
+            # --- OHLCV weekly (2 years — trend di fondo) ---
+            ohlcv_weekly = self._safe_download(ticker, period="2y", interval="1wk")
+
+            # --- OHLCV 4h (60 days — entry timing) ---
+            ohlcv_4h = self._safe_download(ticker, period="60d", interval="1h")
+
             # --- OHLCV intraday 5m (5 days) ---
             ohlcv_5m = self._safe_download(ticker, period="5d", interval="5m")
 
@@ -157,6 +165,8 @@ class DataPrefetcher:
 
             return {
                 "ohlcv_daily":     ohlcv_daily,
+                "ohlcv_weekly":    ohlcv_weekly,
+                "ohlcv_4h":        ohlcv_4h,
                 "ohlcv_5m":        ohlcv_5m,
                 "info":            info,
                 "income_stmt":     income_stmt,
