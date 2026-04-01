@@ -333,7 +333,7 @@ def generate_graham_output(
         ]
     )
 
-    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker})
+    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker}).to_string()
 
     def create_default_ben_graham_signal():
         return BenGrahamSignal(signal="neutral", confidence=0.0, reasoning="Error in generating analysis; defaulting to neutral.")

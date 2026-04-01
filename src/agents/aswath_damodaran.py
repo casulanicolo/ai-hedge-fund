@@ -397,7 +397,7 @@ def generate_damodaran_output(
         ]
     )
 
-    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker})
+    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker}).to_string()
 
     def default_signal():
         return AswathDamodaranSignal(

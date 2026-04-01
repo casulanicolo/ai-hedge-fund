@@ -810,7 +810,7 @@ def generate_buffett_output(
     prompt = template.invoke({
         "facts": json.dumps(facts, separators=(",", ":"), ensure_ascii=False),
         "ticker": ticker,
-    })
+    }).to_string()
 
     # Default fallback uses int confidence to match schema and avoid parse retries
     def create_default_warren_buffett_signal():

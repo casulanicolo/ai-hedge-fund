@@ -449,7 +449,7 @@ def generate_ackman_output(
     prompt = template.invoke({
         "analysis_data": json.dumps(analysis_data, indent=2),
         "ticker": ticker
-    })
+    }).to_string()
 
     def create_default_bill_ackman_signal():
         return BillAckmanSignal(

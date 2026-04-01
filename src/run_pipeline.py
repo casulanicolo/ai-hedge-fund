@@ -133,7 +133,7 @@ def _build_initial_state(tickers: list, run_id: str) -> dict:
             # Richiesti da agenti per reasoning display
             "show_reasoning": False,
             # Configurazione LLM — letta da get_agent_model_config come fallback
-            "model_name": "claude-sonnet-4-5",
+            "model_name": "claude-sonnet-4-6",
             "model_provider": "Anthropic",
             # Tracking
             "run_id": run_id,

@@ -1,11 +1,11 @@
 # Routing agenti per tier di costo
-# PREMIUM  = Claude Sonnet  (ragionamento sofisticato)
-# STANDARD = Claude Haiku   (analisi strutturate)
-# LIGHT    = Groq Llama     (task semplici, quasi gratis)
+# PREMIUM  = Claude Sonnet 4.6
+# STANDARD = Claude Haiku 4.5
+# LIGHT    = Claude Haiku 4.5
 
 tiers:
   premium:
-    model_name: "claude-sonnet-4-5-20251001"
+    model_name: "claude-sonnet-4-6"
     model_provider: "Anthropic"
     agents:
       - warren_buffett_agent
@@ -30,8 +30,8 @@ tiers:
       - technical_analyst_agent
 
   light:
-    model_name: "llama-3.3-70b-versatile"
-    model_provider: "Groq"
+    model_name: "claude-haiku-4-5-20251001"
+    model_provider: "Anthropic"
     agents:
       - news_sentiment_agent
       - growth_analyst_agent

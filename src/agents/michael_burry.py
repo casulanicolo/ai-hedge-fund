@@ -354,7 +354,7 @@ def _generate_burry_output(
         ]
     )
 
-    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker})
+    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker}).to_string()
 
     # Default fallback signal in case parsing fails
     def create_default_michael_burry_signal():

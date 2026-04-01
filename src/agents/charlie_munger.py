@@ -841,7 +841,7 @@ def generate_munger_output(
         "ticker": ticker,
         "facts": json.dumps(facts_bundle, separators=(",", ":"), ensure_ascii=False),
         "confidence": confidence_hint,
-    })
+    }).to_string()
 
     def _default():
         return CharlieMungerSignal(signal="neutral", confidence=confidence_hint, reasoning="Insufficient data")
