@@ -84,6 +84,18 @@ def load_tickers(override=None):
 # ---------------------------------------------------------------------------
 # Costruisce lo stato iniziale nel formato corretto per il grafo
 # ---------------------------------------------------------------------------
+
+
+def _load_agent_model_map() -> dict:
+    """Carica la mappa agente->modello da agent_router."""
+    try:
+        from src.llm.agent_router import _load, _AGENT_MAP
+        _load()
+        return dict(_AGENT_MAP)
+    except Exception as e:
+        log.warning(f"agent_router non disponibile, uso fallback globale: {e}")
+        return {}
+
 def _build_initial_state(tickers: list, run_id: str) -> dict:
     """
     Costruisce l'AgentState iniziale con tutti i campi che gli agenti si aspettano.
@@ -114,6 +126,8 @@ def _build_initial_state(tickers: list, run_id: str) -> dict:
             "agent_weights": {},
         },
         "metadata": {
+            # Routing multi-provider (agent_id -> model)
+            "agent_model_map": _load_agent_model_map(),
             # Richiesti da data_prefetch_agent
             "tickers": tickers,
             # Richiesti da agenti per reasoning display

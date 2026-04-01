@@ -1,0 +1,39 @@
+# Routing agenti per tier di costo
+# PREMIUM  = Claude Sonnet  (ragionamento sofisticato)
+# STANDARD = Claude Haiku   (analisi strutturate)
+# LIGHT    = Groq Llama     (task semplici, quasi gratis)
+
+tiers:
+  premium:
+    model_name: "claude-sonnet-4-5-20251001"
+    model_provider: "Anthropic"
+    agents:
+      - warren_buffett_agent
+      - charlie_munger_agent
+      - portfolio_manager_agent
+      - risk_manager_agent
+
+  standard:
+    model_name: "claude-haiku-4-5-20251001"
+    model_provider: "Anthropic"
+    agents:
+      - ben_graham_agent
+      - peter_lynch_agent
+      - phil_fisher_agent
+      - michael_burry_agent
+      - bill_ackman_agent
+      - mohnish_pabrai_agent
+      - cathie_wood_agent
+      - aswath_damodaran_agent
+      - rakesh_jhunjhunwala_agent
+      - valuation_analyst_agent
+      - technical_analyst_agent
+
+  light:
+    model_name: "llama-3.3-70b-versatile"
+    model_provider: "Groq"
+    agents:
+      - news_sentiment_agent
+      - growth_analyst_agent
+      - sentiment_agent
+      - fundamentals_agent
