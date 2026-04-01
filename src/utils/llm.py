@@ -1,11 +1,14 @@
 """Helper functions for LLM"""
 
 import json
+import logging
 import time
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
 from src.graph.state import AgentState
+
+logger = logging.getLogger(__name__)
 
 
 def call_llm(
@@ -30,7 +33,19 @@ def call_llm(
     Returns:
         An instance of the specified Pydantic model
     """
-    
+
+    # ------------------------------------------------------------------
+    # FASE 2 — Cache hook
+    # Controlla la cache PRIMA di qualsiasi chiamata LLM.
+    # Se il segnale è ancora valido (< 24h, prezzo stabile, nessun 8-K)
+    # ricostruisce il Pydantic dalla cache e ritorna subito.
+    # ------------------------------------------------------------------
+    if agent_name and state:
+        cached_result = _try_return_from_cache(agent_name, state, pydantic_model)
+        if cached_result is not None:
+            return cached_result
+    # ------------------------------------------------------------------
+
     # Extract model configuration if state is provided and agent_name is available
     if state and agent_name:
         model_name, model_provider = get_agent_model_config(state, agent_name)
@@ -68,6 +83,12 @@ def call_llm(
                 if parsed_result:
                     return pydantic_model(**parsed_result)
             else:
+                # ------------------------------------------------------------------
+                # FASE 2 — Salva il segnale in cache dopo una chiamata LLM riuscita
+                # ------------------------------------------------------------------
+                if agent_name and state:
+                    _save_result_to_cache(agent_name, state, result)
+                # ------------------------------------------------------------------
                 return result
 
         except Exception as e:
@@ -86,6 +107,149 @@ def call_llm(
     # This should never be reached due to the retry logic above
     return create_default_response(pydantic_model)
 
+
+# ----------------------------------------------------------------------
+# FASE 2 — Funzioni helper per cache
+# ----------------------------------------------------------------------
+
+def _try_return_from_cache(
+    agent_name: str,
+    state: dict,
+    pydantic_model: type[BaseModel],
+) -> BaseModel | None:
+    """
+    Controlla la cache per ogni ticker nello stato.
+    Se TUTTI i ticker hanno un segnale cached valido, non serve fare nulla.
+    Se anche solo UN ticker non ha cache, ritorna None → il LLM viene chiamato.
+
+    Nota: gli agenti in Athanor Alpha processano un ticker alla volta,
+    quindi in pratica questo controllo riguarda sempre un singolo ticker.
+    """
+    try:
+        from src.data.cache_guard import should_use_cache, get_cached_signal_safe
+
+        # Cerca il ticker corrente nello stato
+        ticker = _get_current_ticker(state)
+        if not ticker:
+            return None
+
+        if not should_use_cache(agent_name, ticker, state):
+            return None
+
+        # Cache valida: ricostruisci il Pydantic
+        cached = get_cached_signal_safe(agent_name, ticker)
+        result = _build_pydantic_from_cache(cached, pydantic_model)
+
+        if result is not None:
+            logger.info(
+                f"[llm] CACHE HIT — {agent_name}/{ticker} "
+                f"→ {cached.get('signal', '?')} ({cached.get('confidence', 0):.0f}%) "
+                f"[LLM saltato]"
+            )
+        return result
+
+    except Exception as e:
+        # Mai bloccare la pipeline per un errore di cache
+        logger.warning(f"[llm] Errore hook cache (ignorato): {e}")
+        return None
+
+
+def _save_result_to_cache(agent_name: str, state: dict, result: BaseModel) -> None:
+    """
+    Salva il risultato di una chiamata LLM riuscita nella cache.
+    Estrae signal, confidence e reasoning dal Pydantic model.
+    """
+    try:
+        from src.data.signal_cache import save_signal
+
+        ticker = _get_current_ticker(state)
+        if not ticker:
+            return
+
+        # Estrae i campi dal Pydantic (con fallback sicuri)
+        signal     = _extract_field(result, ["signal", "action", "recommendation"], "neutral")
+        confidence = float(_extract_field(result, ["confidence", "confidence_score", "score"], 0.0))
+        reasoning  = str(_extract_field(result, ["reasoning", "rationale", "explanation"], ""))
+
+        save_signal(agent_name, ticker, signal, confidence, reasoning)
+
+    except Exception as e:
+        logger.warning(f"[llm] Errore salvataggio cache (ignorato): {e}")
+
+
+def _get_current_ticker(state: dict) -> str | None:
+    """
+    Estrae il ticker corrente dallo stato LangGraph.
+    Gli agenti di Athanor Alpha lavorano su un ticker alla volta
+    passato in state["data"]["current_ticker"] oppure come primo
+    elemento di state["data"]["tickers"].
+    """
+    try:
+        data = state.get("data", {})
+        # Prima opzione: campo dedicato
+        ticker = data.get("current_ticker")
+        if ticker:
+            return str(ticker)
+        # Seconda opzione: primo ticker della lista
+        tickers = data.get("tickers", [])
+        if tickers:
+            return str(tickers[0])
+        return None
+    except Exception:
+        return None
+
+
+def _build_pydantic_from_cache(cached: dict, pydantic_model: type[BaseModel]) -> BaseModel | None:
+    """
+    Ricostruisce un'istanza Pydantic a partire dal dict cached.
+    Prova prima a deserializzare direttamente, poi fa un mapping
+    campo per campo con valori di default sicuri.
+    """
+    try:
+        # Prova deserializzazione diretta se i campi coincidono
+        fields = pydantic_model.model_fields
+        kwargs = {}
+        for field_name, field in fields.items():
+            if field_name in cached:
+                kwargs[field_name] = cached[field_name]
+            elif field.annotation == str:
+                kwargs[field_name] = cached.get("reasoning", "Cached signal")
+            elif field.annotation == float:
+                kwargs[field_name] = cached.get("confidence", 0.0)
+            elif field.annotation == int:
+                kwargs[field_name] = int(cached.get("confidence", 0))
+            elif hasattr(field.annotation, "__args__"):
+                # Literal type: usa il valore cached o il primo allowed
+                signal_val = cached.get("signal", field.annotation.__args__[0])
+                # Verifica che il valore sia tra quelli ammessi
+                if signal_val in field.annotation.__args__:
+                    kwargs[field_name] = signal_val
+                else:
+                    kwargs[field_name] = field.annotation.__args__[0]
+            else:
+                kwargs[field_name] = None
+        return pydantic_model(**kwargs)
+    except Exception as e:
+        logger.warning(f"[llm] Impossibile ricostruire Pydantic dalla cache: {e}")
+        return None
+
+
+def _extract_field(obj: any, field_names: list[str], default: any) -> any:
+    """Estrae il primo campo disponibile da un oggetto Pydantic o dict."""
+    for name in field_names:
+        if isinstance(obj, dict):
+            if name in obj:
+                return obj[name]
+        elif hasattr(obj, name):
+            val = getattr(obj, name)
+            if val is not None:
+                return val
+    return default
+
+
+# ----------------------------------------------------------------------
+# Funzioni originali (invariate)
+# ----------------------------------------------------------------------
 
 def create_default_response(model_class: type[BaseModel]) -> BaseModel:
     """Creates a safe default response based on the model's fields."""
@@ -131,14 +295,14 @@ def get_agent_model_config(state, agent_name):
     Always returns valid model_name and model_provider values.
     """
     request = state.get("metadata", {}).get("request")
-    
+
     if request and hasattr(request, 'get_agent_model_config'):
         # Get agent-specific model configuration
         model_name, model_provider = request.get_agent_model_config(agent_name)
         # Ensure we have valid values
         if model_name and model_provider:
             return model_name, model_provider.value if hasattr(model_provider, 'value') else str(model_provider)
-    
+
     # Cerca nella mappa di routing per agente
     agent_model_map = state.get("metadata", {}).get("agent_model_map", {})
     if agent_name and agent_name in agent_model_map:
@@ -149,9 +313,9 @@ def get_agent_model_config(state, agent_name):
     # Fall back to global configuration (system defaults)
     model_name = state.get("metadata", {}).get("model_name") or "claude-sonnet-4-5-20251001"
     model_provider = state.get("metadata", {}).get("model_provider") or "Anthropic"
-    
+
     # Convert enum to string if necessary
     if hasattr(model_provider, 'value'):
         model_provider = model_provider.value
-    
+
     return model_name, model_provider

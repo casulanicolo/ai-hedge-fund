@@ -82,10 +82,8 @@ def load_tickers(override=None):
 
 
 # ---------------------------------------------------------------------------
-# Costruisce lo stato iniziale nel formato corretto per il grafo
+# Costruisce lo stato iniziale
 # ---------------------------------------------------------------------------
-
-
 def _load_agent_model_map() -> dict:
     """Carica la mappa agente->modello da agent_router."""
     try:
@@ -97,45 +95,27 @@ def _load_agent_model_map() -> dict:
         return {}
 
 def _build_initial_state(tickers: list, run_id: str) -> dict:
-    """
-    Costruisce l'AgentState iniziale con tutti i campi che gli agenti si aspettano.
-
-    Campi richiesti dagli agenti:
-      state["data"]["tickers"]       — lista ticker (philosophy agents)
-      state["data"]["end_date"]      — data fine analisi (philosophy agents)
-      state["metadata"]["tickers"]   — lista ticker (data_prefetch_agent)
-      state["metadata"]["run_id"]    — id run corrente
-      state["metadata"]["show_reasoning"] — flag per print reasoning (False = silenzioso)
-    """
     end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     return {
         "messages": [],
         "data": {
-            # Richiesti dai philosophy agents (ben_graham, buffett, ecc.)
             "tickers": tickers,
             "end_date": end_date,
             "start_date": (datetime.now(timezone.utc).replace(year=datetime.now(timezone.utc).year - 1)).strftime("%Y-%m-%d"),
-            # Richiesti da prefetch e agenti core
             "prefetched_data": {},
             "analyst_signals": {},
             "portfolio_output": {},
             "risk_output": {},
-            # Feedback loop (iniettati da SQLite se disponibili)
             "feedback_history": {},
             "agent_weights": {},
         },
         "metadata": {
-            # Routing multi-provider (agent_id -> model)
             "agent_model_map": _load_agent_model_map(),
-            # Richiesti da data_prefetch_agent
             "tickers": tickers,
-            # Richiesti da agenti per reasoning display
             "show_reasoning": False,
-            # Configurazione LLM — letta da get_agent_model_config come fallback
             "model_name": "claude-sonnet-4-6",
             "model_provider": "Anthropic",
-            # Tracking
             "run_id": run_id,
             "start_time": datetime.now(timezone.utc).isoformat(),
         },
@@ -161,7 +141,6 @@ def _build_digest(final_state, tickers, run_id):
             if ticker not in agent_data:
                 continue
             sig = agent_data[ticker]
-            # Gli agenti usano segnali diversi: bullish/bearish/neutral o BUY/SELL/HOLD
             raw_signal = str(sig.get("signal", "HOLD")).upper()
             direction = {"BULLISH": "BUY", "BEARISH": "SELL", "NEUTRAL": "HOLD"}.get(raw_signal, raw_signal)
             conf = float(sig.get("confidence", 0))
@@ -171,16 +150,40 @@ def _build_digest(final_state, tickers, run_id):
                 f"  {agent_id:35s} {direction:4s} conf={conf:.2f}"
             )
 
-    # Plain text
+    # Posizioni aperte (dal portfolio manager output)
+    open_positions = portfolio_output.get("open_positions", [])
+
+    # Plain text — SENZA troncamenti
     lines = [
         "ATHANOR ALPHA — DAILY REPORT",
         f"Run    : {run_id}",
         f"Data   : {now_str}",
         f"Ticker : {', '.join(tickers)}",
         "",
-        "=" * 52,
+        "=" * 60,
+        "POSIZIONI APERTE",
+        "=" * 60,
+    ]
+
+    if open_positions:
+        lines.append(f"  {'TICKER':<6}  {'DIR':<5}  {'ENTRY':>8}  {'SL':>8}  {'TP':>8}  {'SIZE $':>9}")
+        lines.append(f"  {'-'*56}")
+        for p in open_positions:
+            lines.append(
+                f"  {p['ticker']:<6}  {p['direction']:<5}  "
+                f"{p['entry_price']:>8.2f}  {p['stop_loss']:>8.2f}  "
+                f"{p['take_profit']:>8.2f}  {p['size_usd']:>9,.0f}"
+            )
+            if p.get("note"):
+                lines.append(f"         Nota: {p['note']}")
+    else:
+        lines.append("  Nessuna posizione aperta — portafoglio in cash.")
+
+    lines += [
+        "",
+        "=" * 60,
         "SEGNALI AGENTI",
-        "=" * 52,
+        "=" * 60,
     ]
     for ticker in tickers:
         v = ticker_votes[ticker]
@@ -188,32 +191,43 @@ def _build_digest(final_state, tickers, run_id):
         for a in v["agents"]:
             lines.append(a)
 
-    lines += ["", "=" * 52, "RACCOMANDAZIONI PORTFOLIO MANAGER", "=" * 52]
+    lines += ["", "=" * 60, "RACCOMANDAZIONI PORTFOLIO MANAGER", "=" * 60]
     recs = []
     if isinstance(portfolio_output, dict):
         recs = portfolio_output.get("recommendations", [])
         summary = portfolio_output.get("portfolio_summary", "")
         risk_notes = portfolio_output.get("risk_notes", "")
         if summary:
-            lines.append(f"Sintesi: {summary[:200]}")
+            lines.append(f"\nSintesi:\n{summary}")       # nessun taglio
         if risk_notes:
-            lines.append(f"Risk:    {risk_notes[:200]}")
+            lines.append(f"\nRisk notes:\n{risk_notes}") # nessun taglio
         lines.append("")
+
     if recs:
         for rec in recs:
-            t = rec.get("ticker", "?")
+            t      = rec.get("ticker", "?")
             action = rec.get("action", "?")
             sizing = rec.get("sizing_pct", 0)
-            conv = rec.get("conviction", 0)
-            reason = str(rec.get("reasoning", ""))[:120]
-            lines.append(f"{t}: {action} | size={sizing}% | conviction={conv:.2f}")
-            lines.append(f"  {reason}")
+            conv   = rec.get("conviction", 0)
+            entry  = rec.get("entry_price")
+            sl     = rec.get("stop_loss")
+            tp     = rec.get("take_profit")
+            size   = rec.get("size_usd")
+            rr     = rec.get("rr_ratio")
+            reason = str(rec.get("reasoning", ""))        # nessun taglio
+
+            lines.append(f"\n{'─'*50}")
+            lines.append(f"{t}: {action} | size={sizing}% | conviction={conv:.2f} | consensus={rec.get('consensus','?')}")
+            if entry is not None:
+                lines.append(f"  Entry={entry:.2f}  SL={sl:.2f}  TP={tp:.2f}  Size=${size:,.0f}  R/R=1:{rr:.1f}")
+            lines.append(f"  Reasoning: {reason}")
     else:
         lines.append("(nessun output portfolio manager — controlla i log)")
 
     body_text = "\n".join(lines)
 
-    # HTML
+    # ── HTML ──────────────────────────────────────────────────────────
+    # Tabella voti per ticker
     html_rows = ""
     for ticker in tickers:
         v = ticker_votes[ticker]
@@ -224,16 +238,93 @@ def _build_digest(final_state, tickers, run_id):
             f"<td style='color:gray'>HOLD {v['HOLD']}</td></tr>"
         )
 
-    body_html = f"""<html><body style="font-family:monospace;font-size:14px">
-<h2>Athanor Alpha — Daily Report</h2>
-<p>Run: <code>{run_id}</code> &nbsp;|&nbsp; {now_str}</p>
-<h3>Voti agenti per ticker</h3>
-<table border="1" cellpadding="6" style="border-collapse:collapse">
-  <tr><th>Ticker</th><th>BUY</th><th>SELL</th><th>HOLD</th></tr>
-  {html_rows}
-</table>
-<h3>Dettaglio completo</h3>
-<pre style="background:#f5f5f5;padding:12px">{body_text}</pre>
+    # Sezione posizioni aperte HTML
+    if open_positions:
+        pos_rows = ""
+        for p in open_positions:
+            note_str = f"<br><small style='color:#888'>{p['note']}</small>" if p.get("note") else ""
+            dir_color = "#27ae60" if p["direction"] == "LONG" else "#c0392b"
+            pos_rows += (
+                f"<tr>"
+                f"<td><b>{p['ticker']}</b></td>"
+                f"<td style='color:{dir_color};font-weight:bold'>{p['direction']}</td>"
+                f"<td>${p['entry_price']:.2f}</td>"
+                f"<td style='color:#c0392b'>${p['stop_loss']:.2f}</td>"
+                f"<td style='color:#27ae60'>${p['take_profit']:.2f}</td>"
+                f"<td>${p['size_usd']:,.0f}</td>"
+                f"<td>{p['opened_at'][:10]}{note_str}</td>"
+                f"</tr>"
+            )
+        positions_html = f"""
+<h3>📂 Posizioni Aperte ({len(open_positions)})</h3>
+<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
+  <tr style="background:#f0f0f0">
+    <th>Ticker</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>Size $</th><th>Aperta il</th>
+  </tr>
+  {pos_rows}
+</table>"""
+    else:
+        positions_html = "<h3>📂 Posizioni Aperte</h3><p style='color:#888'>Nessuna posizione aperta — portafoglio in cash.</p>"
+
+    # Sezione raccomandazioni HTML — senza troncamenti
+    recs_html = ""
+    if recs:
+        for rec in recs:
+            action = rec.get("action", "HOLD")
+            color  = {"BUY": "#27ae60", "SELL": "#c0392b"}.get(action, "#888")
+            entry  = rec.get("entry_price")
+            levels_html = ""
+            if entry is not None:
+                levels_html = (
+                    f"<tr><td>Entry / SL / TP</td>"
+                    f"<td>${entry:.2f} / ${rec.get('stop_loss'):.2f} / ${rec.get('take_profit'):.2f}</td></tr>"
+                    f"<tr><td>Size / R&R</td>"
+                    f"<td>${rec.get('size_usd',0):,.0f} &nbsp; 1:{rec.get('rr_ratio',0):.1f}</td></tr>"
+                )
+            recs_html += f"""
+<div style="border:1px solid #ddd;border-left:4px solid {color};border-radius:4px;padding:12px;margin:10px 0">
+  <div style="font-size:16px;font-weight:bold;color:#2c3e50">
+    {rec.get('ticker')} &nbsp;
+    <span style="color:{color}">{action}</span>
+    &nbsp; <span style="font-size:13px;color:#888">{rec.get('consensus','')}</span>
+  </div>
+  <table style="margin-top:8px;font-size:13px;width:100%">
+    <tr><td style="color:#888;width:35%">Conviction</td><td>{rec.get('conviction',0):.2f}</td></tr>
+    <tr><td style="color:#888">Sizing</td><td>{rec.get('sizing_pct',0)}%</td></tr>
+    {levels_html}
+  </table>
+  <p style="font-size:13px;margin:8px 0 0;color:#444">{rec.get('reasoning','')}</p>
+</div>"""
+
+    summary_html   = portfolio_output.get("portfolio_summary", "")
+    risk_html      = portfolio_output.get("risk_notes", "")
+
+    body_html = f"""<html><body style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;background:#f4f4f4;padding:20px">
+<div style="max-width:700px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#2c3e50;color:#fff;padding:20px 28px">
+    <h2 style="margin:0">📊 Athanor Alpha — Daily Report</h2>
+    <p style="margin:4px 0 0;opacity:.8">Run: <code>{run_id}</code> &nbsp;|&nbsp; {now_str}</p>
+  </div>
+  <div style="padding:24px 28px">
+
+    {positions_html}
+
+    <h3>📈 Voti Agenti per Ticker</h3>
+    <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
+      <tr style="background:#f0f0f0"><th>Ticker</th><th>BUY</th><th>SELL</th><th>HOLD</th></tr>
+      {html_rows}
+    </table>
+
+    <h3>💼 Raccomandazioni Portfolio Manager</h3>
+    {f'<p style="background:#f8f9fa;padding:10px;border-radius:4px">{summary_html}</p>' if summary_html else ''}
+    {recs_html}
+    {f'<div style="background:#fef5ec;border-left:4px solid #d35400;padding:10px;margin-top:16px;font-size:13px"><b>⚠️ Risk Notes:</b> {risk_html}</div>' if risk_html else ''}
+
+  </div>
+  <div style="background:#f8f9fa;padding:14px 28px;font-size:11px;color:#999;text-align:center">
+    Athanor Alpha · {now_str} · Automated report. No trade has been executed.
+  </div>
+</div>
 </body></html>"""
 
     return subject, body_text, body_html
@@ -254,26 +345,15 @@ def run_pipeline(tickers, send_email=True):
     _record_run_start(conn, run_id, tickers)
 
     try:
-        # ------------------------------------------------------------------
-        # 1. Import
-        # ------------------------------------------------------------------
         log.info("[1/4] Import moduli...")
         from src.graph.graph import compiled_graph
         from src.feedback.weight_adjuster import adjust_weights
         log.info("[1/4] OK.")
 
-        # ------------------------------------------------------------------
-        # 2. Stato iniziale
-        # ------------------------------------------------------------------
         log.info("[2/4] Costruzione AgentState...")
         initial_state = _build_initial_state(tickers, run_id)
         log.info(f"[2/4] end_date={initial_state['data']['end_date']}  show_reasoning=False")
 
-        # ------------------------------------------------------------------
-        # 3. Esegue il grafo
-        # NOTA: il grafo include già PREDICTION_LOG_NODE come ultimo nodo,
-        # quindi log_predictions viene chiamato automaticamente.
-        # ------------------------------------------------------------------
         log.info("[3/4] Esecuzione grafo (2-5 minuti, attendere)...")
         log.info("      prefetch → agenti paralleli → risk → portfolio → log")
         final_state = compiled_graph.invoke(initial_state)
@@ -281,9 +361,6 @@ def run_pipeline(tickers, send_email=True):
         signals = final_state.get("data", {}).get("analyst_signals", {})
         log.info(f"[3/4] Grafo completato. Agenti con segnali: {len(signals)}")
 
-        # ------------------------------------------------------------------
-        # 4. Aggiorna pesi + email
-        # ------------------------------------------------------------------
         log.info("[4/4] Aggiornamento pesi agenti...")
         try:
             weights = adjust_weights()
@@ -306,7 +383,6 @@ def run_pipeline(tickers, send_email=True):
         else:
             log.info("[4/4] Email saltata.")
 
-        # ------------------------------------------------------------------
         _record_run_end(conn, run_id, "completed")
         log.info("=" * 60)
         log.info(f"RUN COMPLETATO CON SUCCESSO — run_id={run_id[:8]}")

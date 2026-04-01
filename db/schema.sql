@@ -89,3 +89,21 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     tickers     TEXT    NOT NULL,               -- JSON array, e.g. '["AAPL","NVDA",...]'
     error_msg   TEXT                            -- populated on failure
 );
+
+-- ─────────────────────────────────────────────
+-- 6. SIGNAL CACHE  (Fase 2)
+-- Cache segnali agente/ticker per evitare chiamate LLM ridondanti.
+-- TTL gestito a runtime da signal_cache.py (default 24h).
+-- PRIMARY KEY (agent_id, ticker) — un solo record per coppia.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS signal_cache (
+    agent_id    TEXT    NOT NULL,
+    ticker      TEXT    NOT NULL,
+    signal      TEXT    NOT NULL,
+    confidence  REAL    NOT NULL DEFAULT 0.0,
+    reasoning   TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,               -- ISO-8601 UTC
+    PRIMARY KEY (agent_id, ticker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_cache_created ON signal_cache(created_at);
