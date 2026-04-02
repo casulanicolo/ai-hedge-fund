@@ -339,6 +339,7 @@ def sentiment_agent(state: AgentState) -> dict[str, Any]:
     analyst_signals.setdefault(AGENT_ID, {})
 
     for ticker in tickers:
+        data["current_ticker"] = ticker
         progress.update_status(AGENT_ID, ticker, "fetching news")
 
         # ── 1. Collect raw items ──────────────────────────────────
