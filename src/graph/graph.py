@@ -102,6 +102,7 @@ ANALYST_NODES: list[tuple[str, Callable]] = [
     ("technicals",      _import_or_stub("src.agents.technicals", "technical_analyst_agent",      "technicals")),
     ("fundamentals",    _import_or_stub("src.agents.fundamentals", "fundamentals_analyst_agent",    "fundamentals")),
     ("sentiment",       _import_or_stub("src.agents.sentiment",       "sentiment_agent",       "sentiment")),
+    ("breakout_momentum", _import_or_stub("src.agents.breakout_momentum", "breakout_momentum_agent", "breakout_momentum")),
 ]
 
 # Post-analyst nodes
