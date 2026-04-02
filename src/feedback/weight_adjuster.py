@@ -7,7 +7,7 @@ Formula: w_new = alpha * performance_score + (1 - alpha) * w_old
 - alpha = 0.15 (learning rate)
 - floor = 0.05 (minimum weight, no agent is ever fully silenced)
 
-Performance score (0.0 – 1.0) combines:
+Performance score (0.0 — 1.0) combines:
   - hit_rate:          fraction of directional calls that were correct
   - avg_return:        mean actual return when the signal was correct
   - inverse_drawdown:  1 / (1 + max single-prediction loss), penalises big misses
@@ -29,6 +29,29 @@ DB_PATH = Path("db/hedge_fund.db")
 ALPHA = 0.15   # EWA learning rate
 FLOOR = 0.05   # minimum weight floor
 DEFAULT_WEIGHT = 1.0  # weight assigned to new agents with no history
+
+# Whitelist of currently active agents.
+# Add/remove agent names here when agents are added or removed from the pipeline.
+ACTIVE_AGENTS = {
+    "warren_buffett_agent",
+    "ben_graham_agent",
+    "charlie_munger_agent",
+    "michael_burry_agent",
+    "bill_ackman_agent",
+    "cathie_wood_agent",
+    "technical_analyst_agent",
+    "fundamentals_analyst_agent",
+    "sentiment_agent",
+    "breakout_momentum_agent",
+}
+
+# Whitelist of currently active tickers (loaded from config if needed).
+# Inactive tickers (e.g. SPY, removed tickers) are excluded automatically.
+ACTIVE_TICKERS = {
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
+    "TSLA", "MSTR", "COIN", "SMCI", "MELI",
+    "BTC-USD", "ETH-USD", "SOL-USD",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +180,7 @@ def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connecti
 def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
     """
     Update the agent_weights table for every (agent_id, ticker) pair
-    that has at least one outcome row.
+    that has at least one outcome row AND belongs to active agents/tickers.
 
     Returns a summary dict: { (agent_id, ticker): new_weight }
     """
@@ -178,11 +201,22 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
             logger.warning("No outcomes found in DB — agent_weights not updated.")
             return summary
 
-        logger.info(f"Found {len(pairs)} (agent_id, ticker) pair(s) with outcomes.")
+        logger.info(f"Found {len(pairs)} (agent_id, ticker) pair(s) with outcomes in DB.")
 
+        skipped = 0
         for pair in pairs:
             agent_id = pair["agent_id"]
             ticker   = pair["ticker"]
+
+            # --- Filter: skip inactive agents and tickers ---
+            if agent_id not in ACTIVE_AGENTS:
+                logger.debug(f"  Skipping {agent_id}/{ticker} — agent not in ACTIVE_AGENTS.")
+                skipped += 1
+                continue
+            if ticker not in ACTIVE_TICKERS:
+                logger.debug(f"  Skipping {agent_id}/{ticker} — ticker not in ACTIVE_TICKERS.")
+                skipped += 1
+                continue
 
             # Compute performance score for this pair
             score = compute_performance_score(agent_id, ticker, conn)
@@ -219,6 +253,9 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
                 f"  {agent_id:35s} / {ticker:6s}: "
                 f"score={score:.4f}, w_old={w_old:.4f} → w_new={w_new:.4f}"
             )
+
+        if skipped:
+            logger.info(f"Skipped {skipped} pair(s) belonging to inactive agents or tickers.")
 
         conn.commit()
         logger.info(f"agent_weights updated: {len(summary)} row(s) written.")
