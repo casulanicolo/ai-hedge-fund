@@ -14,7 +14,7 @@ from src.utils.llm import call_llm
 from src.utils.progress import progress
 
 
-# ── Pydantic output schema ───────────────────────────────────────────────────
+# ── Pydantic output schema ──────────────────────────────────────────────────
 
 class FundamentalSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"] = Field(
@@ -28,7 +28,7 @@ class FundamentalSignal(BaseModel):
     )
 
 
-# ── Data loader ──────────────────────────────────────────────────────────────
+# ── Data loader ─────────────────────────────────────────────────────────────
 
 def _load_ticker_data(state: AgentState, ticker: str) -> dict:
     """
@@ -50,7 +50,7 @@ def _load_ticker_data(state: AgentState, ticker: str) -> dict:
     }
 
 
-# ── Scoring helpers ──────────────────────────────────────────────────────────
+# ── Scoring helpers ─────────────────────────────────────────────────────────
 
 def score_revenue_growth(incq: pd.DataFrame) -> tuple[float, dict]:
     """Score 0-100 based on QoQ and YoY revenue growth."""
@@ -70,9 +70,9 @@ def score_revenue_growth(incq: pd.DataFrame) -> tuple[float, dict]:
 
         score = 50.0
         if qoq is not None:
-            score += max(-50, min(50, qoq * 500))   # ±10% QoQ → ±50 pts
+            score += max(-50, min(50, qoq * 500))
         if yoy is not None:
-            score += max(-50, min(50, yoy * 250))   # ±20% YoY → ±50 pts
+            score += max(-50, min(50, yoy * 250))
         score = max(0, min(100, score))
     except Exception as e:
         raw["error"] = str(e)
@@ -104,8 +104,8 @@ def score_operating_margin(incq: pd.DataFrame) -> tuple[float, dict]:
 
         score = 50.0
         if current is not None:
-            score += max(-50, min(50, current * 250))  # 20% margin → +50 pts
-        score += max(-20, min(20, trend * 200))        # improving trend bonus
+            score += max(-50, min(50, current * 250))
+        score += max(-20, min(20, trend * 200))
         score = max(0, min(100, score))
     except Exception as e:
         raw["error"] = str(e)
@@ -127,7 +127,7 @@ def score_fcf_yield(cfq: pd.DataFrame, market_cap: float | None) -> tuple[float,
         if market_cap and market_cap > 0:
             yield_  = ttm_fcf / market_cap
             raw["fcf_yield_pct"] = round(yield_ * 100, 2)
-            score = 50 + yield_ * 1000   # 5% yield → +50 pts
+            score = 50 + yield_ * 1000
             score = max(0, min(100, score))
         else:
             score = 50.0
@@ -160,10 +160,10 @@ def score_debt_equity(bsq: pd.DataFrame) -> tuple[float, dict]:
         raw["debt_equity_trend"]   = round(trend, 3)
 
         if current is not None:
-            score = 100 - min(100, current * 25)  # D/E=0→100, D/E=4→0
+            score = 100 - min(100, current * 25)
         else:
             score = 50.0
-        score -= max(-20, min(20, trend * 20))    # improving trend bonus
+        score -= max(-20, min(20, trend * 20))
         score = max(0, min(100, score))
     except Exception as e:
         raw["error"] = str(e)
@@ -182,7 +182,7 @@ def score_insider_activity(info: dict) -> tuple[float, dict]:
         if held is None:
             return 50.0, raw
 
-        score = 50 + min(50, held * 400)   # 10% insiders → +40 pts
+        score = 50 + min(50, held * 400)
         score = max(0, min(100, score))
     except Exception as e:
         raw["error"] = str(e)
@@ -195,12 +195,13 @@ def score_insider_activity(info: dict) -> tuple[float, dict]:
 
 def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_analyst_agent"):
     """
-    Fundamental Analyst Agent — Fase 3.2
+    Fundamental Analyst Agent – Fase 3.2
     Per ogni ticker:
     1. Legge dati finanziari da prefetched_data o yfinance (fallback)
     2. Calcola 5 score (0-100): revenue growth, op margin, FCF yield, D/E, insider
     3. Passa score + raw data all'LLM per segnale finale
     4. Output strutturato: {signal, confidence, reasoning, scores}
+    Crypto assets (ticker ending in -USD) are skipped: signal='skip', confidence=0.
     """
     data    = state["data"]
     tickers = data["tickers"]
@@ -210,6 +211,17 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Loading financial data")
 
+        # ── Crypto: no fundamental data available ──────────────────────────
+        if ticker.endswith("-USD"):
+            fundamental_analysis[ticker] = {
+                "signal": "skip",
+                "confidence": 0,
+                "reasoning": "No fundamental data available for crypto assets.",
+                "scores": {},
+            }
+            progress.update_status(agent_id, ticker, "Skipped (crypto)")
+            continue
+
         try:
             payload    = _load_ticker_data(state, ticker)
             incq       = payload.get("income_stmt_q")
@@ -218,7 +230,7 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
             info       = payload.get("info", {})
             market_cap = info.get("marketCap")
 
-            # ── Compute scores ───────────────────────────────────────────
+            # ── Compute scores ────────────────────────────────────────────
             progress.update_status(agent_id, ticker, "Computing fundamental scores")
 
             s_rev, r_rev = score_revenue_growth(incq)       if incq is not None and not incq.empty else (50.0, {"error": "no data"})
@@ -246,7 +258,7 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
                 "insider_activity": r_ins,
             }
 
-            # ── LLM call ─────────────────────────────────────────────────
+            # ── LLM call ──────────────────────────────────────────────────
             progress.update_status(agent_id, ticker, "Generating signal via LLM")
 
             prompt = f"""You are a fundamental analyst evaluating {ticker}.
@@ -300,7 +312,7 @@ Respond in JSON format.
                 "reasoning": f"Error during analysis: {e}", "scores": {}
             }
 
-    # ── Write to state ────────────────────────────────────────────────────
+    # ── Write to state ───────────────────────────────────────────────────────
     msg = HumanMessage(content=str(fundamental_analysis), name=agent_id)
 
     if state.get("metadata", {}).get("show_reasoning"):

@@ -1,10 +1,10 @@
 """
-portfolio_manager.py — Athanor Alpha Phase 3.5
+portfolio_manager.py – Athanor Alpha Phase 3.5
 Reads analyst_signals + risk_report from state.
 Produces per-ticker recommendations:
   {ticker, action, sizing_pct, conviction, reasoning,
    entry_price, stop_loss, take_profit, size_usd, rr_ratio, consensus}
-No execution — output only. Writes to state["data"]["portfolio_recommendations"].
+No execution – output only. Writes to state["data"]["portfolio_recommendations"].
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from src.utils.progress import progress
 
 AGENT_ID = "portfolio_manager"
 
-# ── Sizing parameters ──────────────────────────────────────────────────────
+# ── Sizing parameters ────────────────────────────────────────────────────────
 MAX_SINGLE_POSITION = 20.0    # % of portfolio, hard cap per ticker
 MIN_SINGLE_POSITION = 2.0     # % below this → skip (not worth it)
 TOTAL_GROSS_BUDGET = 100.0    # we size to 100% gross, human decides leverage
@@ -31,7 +31,7 @@ KELLY_FRACTION = 0.25         # Quarter-Kelly per sicurezza (f/4)
 CORR_PENALTY_THRESHOLD = 0.70 # Correlazione oltre cui ridurre sizing del 30%
 CORR_PENALTY_FACTOR = 0.70    # Sizing ridotto a 70% se correlazione alta
 
-# ── Dollar-risk parameters (read from .env, with sensible defaults) ────────
+# ── Dollar-risk parameters (read from .env, with sensible defaults) ──────────
 PORTFOLIO_SIZE_USD = float(os.getenv("PORTFOLIO_SIZE_USD", "10000"))
 RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.01"))   # 1% per trade
 MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "5"))          # max open positions
@@ -40,9 +40,9 @@ MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "5"))          # max ope
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Pydantic output model
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 class TickerRecommendation(BaseModel):
     ticker: str = Field(description="Equity ticker symbol")
@@ -64,9 +64,9 @@ class PortfolioOutput(BaseModel):
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Legge posizioni aperte da SQLite
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _load_open_positions() -> list[dict]:
     """
@@ -104,14 +104,15 @@ def _format_positions_for_prompt(positions: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Signal aggregation with agent weights
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
     """
     For each ticker compute a weighted net score across all agents.
     Uses agent_weights from state if available, otherwise uniform weights.
+    Signals with signal='skip' are ignored (not counted in weight or score).
     Returns {ticker: {net_score, avg_confidence, bull_agents, bear_agents, net_signal}}
     """
     analyst_signals: dict[str, Any] = state.get("data", {}).get("analyst_signals", {})
@@ -145,6 +146,11 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
                 continue
 
             signal = str(sig_data.get("signal", "neutral")).lower()
+
+            # skip signals are excluded from aggregation entirely
+            if signal == "skip":
+                continue
+
             confidence = float(sig_data.get("confidence", 0.5))
 
             # Agent weight: from feedback loop DB if available, else 1.0
@@ -201,9 +207,9 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
     return result
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Sizing logic (no LLM needed here — pure math)
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# Sizing logic (no LLM needed here – pure math)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _kelly_sizing(edge: float, rr_ratio: float) -> float:
     """
@@ -214,13 +220,9 @@ def _kelly_sizing(edge: float, rr_ratio: float) -> float:
     """
     if rr_ratio <= 0 or edge <= 0:
         return 0.0
-    # Kelly formula: f = (edge × odds - (1 - edge)) / odds
-    # dove odds = rr_ratio (guadagno per unità rischiata)
     kelly_f = (edge * rr_ratio - (1.0 - edge)) / rr_ratio
     kelly_f = max(0.0, kelly_f)
-    # Quarter-Kelly per sicurezza (riduce rischio di ruin)
     sizing_fraction = kelly_f * KELLY_FRACTION
-    # Converti da frazione di portafoglio a % (es. 0.15 → 15%)
     return round(sizing_fraction * 100.0, 1)
 
 
@@ -238,10 +240,8 @@ def _compute_sizing(
     avg_conf = agg.get("avg_confidence", 0.5)
     net_signal = agg.get("net_signal", "neutral")
 
-    # Conviction: |net_score| × avg_confidence → [0, 1]
     conviction = min(1.0, abs(net_score) * avg_conf * 2.0)
 
-    # Determina azione prima del sizing
     if net_signal == "bullish":
         action = "BUY"
     elif net_signal == "bearish":
@@ -249,19 +249,15 @@ def _compute_sizing(
     else:
         return 0.0, round(conviction, 3), "HOLD"
 
-    # ── Kelly sizing ────────────────────────────────────────────────────────
-    # edge = conviction (proxy di win probability), rr_ratio da trade levels
     trade_levels = risk_report.get("trade_levels", {}).get(ticker, {})
     rr_ratio = float(trade_levels.get("rr_ratio", 2.0))
-    edge = conviction  # conviction è già normalizzata 0-1
+    edge = conviction
 
     sizing = _kelly_sizing(edge, rr_ratio)
 
-    # Fallback se Kelly dà 0 (segnale debole): usa floor minimo
     if sizing < MIN_SINGLE_POSITION and conviction >= 0.15:
         sizing = MIN_SINGLE_POSITION
 
-    # ── Penalità rischio ────────────────────────────────────────────────────
     ticker_flags = risk_report.get("ticker_flags", {}).get(ticker, [])
     risk_penalty = 0.8 if ticker_flags else 1.0
 
@@ -269,14 +265,12 @@ def _compute_sizing(
     if daily_var > 0.04:
         risk_penalty *= 0.75
 
-    # ── Macro regime VIX multiplier ─────────────────────────────────────────
     macro = risk_report.get("macro_regime", {})
     vix_multiplier = float(macro.get("sizing_multiplier", 1.0))
     risk_penalty *= vix_multiplier
 
     sizing = sizing * risk_penalty
 
-    # Cap short sizing
     if action == "SELL":
         sizing = min(sizing, 10.0)
 
@@ -292,8 +286,6 @@ def _apply_correlation_penalty(
 ) -> list[dict]:
     """
     Riduce il sizing dei ticker altamente correlati per evitare concentrazione.
-    Ordina i BUY per conviction decrescente; per ogni coppia con corr > threshold,
-    il secondo ticker (conviction minore) viene penalizzato del 30%.
     """
     corr_matrix = risk_report.get("correlation_matrix", {})
     if not corr_matrix:
@@ -322,10 +314,7 @@ def _apply_correlation_penalty(
 def _normalise_sizing(recommendations: list[dict], risk_report: dict | None = None) -> list[dict]:
     """
     Scale sizing_pct so that BUY positions sum to at most TOTAL_GROSS_BUDGET.
-    Applica correlation penalty prima della normalizzazione.
-    Remove positions below MIN_SINGLE_POSITION.
     """
-    # Applica penalità correlazione
     if risk_report:
         recommendations = _apply_correlation_penalty(recommendations, risk_report)
 
@@ -338,21 +327,18 @@ def _normalise_sizing(recommendations: list[dict], risk_report: dict | None = No
         for r in buys:
             r["sizing_pct"] = round(r["sizing_pct"] * scale, 1)
 
-    # Filter out positions that became too small after scaling
     buys = [r for r in buys if r["sizing_pct"] >= MIN_SINGLE_POSITION]
 
     return buys + others
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Trade-level enrichment and trade selection
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _select_top_trades(pre_recs: list[dict]) -> list[dict]:
     """
     Keep at most MAX_ACTIVE_TRADES active positions (BUY + SELL combined).
-    Candidates are ranked by conviction descending.
-    Excess positions are demoted to HOLD (sizing_pct = 0).
     """
     active = [r for r in pre_recs if r["action"] in ("BUY", "SELL")]
     hold   = [r for r in pre_recs if r["action"] == "HOLD"]
@@ -386,7 +372,6 @@ def _enrich_with_trade_levels(
         agg    = weighted.get(ticker, {})
         n      = agg.get("n_agents", 0)
 
-        # Consensus string
         if action == "BUY":
             votes = agg.get("bull_agents", [])
             rec["consensus"] = f"{len(votes)}/{n} bullish" if n else "—"
@@ -396,7 +381,6 @@ def _enrich_with_trade_levels(
         else:
             rec["consensus"] = f"{n} agents / mixed"
 
-        # Trade levels (only for actionable tickers)
         levels = trade_levels.get(ticker) if action in ("BUY", "SELL") else None
 
         if levels:
@@ -429,9 +413,9 @@ def _enrich_with_trade_levels(
     return pre_recs
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# LLM reasoning per ticker — include posizioni aperte nel prompt
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# LLM reasoning per ticker – include posizioni aperte nel prompt
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _build_llm_prompt(
     tickers: list[str],
@@ -443,7 +427,6 @@ def _build_llm_prompt(
     warnings_text = "\n".join(risk_report.get("warnings", [])) or "None"
     positions_text = _format_positions_for_prompt(open_positions)
 
-    # Mappa ticker → posizione aperta per riferimento rapido
     open_pos_map = {p["ticker"]: p for p in open_positions}
 
     ticker_block = ""
@@ -459,7 +442,6 @@ def _build_llm_prompt(
             if entry is not None else "no trade levels"
         )
 
-        # Aggiungi info posizione aperta se esiste
         pos_info = ""
         if t in open_pos_map:
             p = open_pos_map[t]
@@ -495,7 +477,7 @@ Historical Max Drawdown estimate: {risk_report.get('max_drawdown_estimate', 0)*1
 YOUR TASK:
 For each ticker, write a one-sentence reasoning that explains the recommended action and sizing.
 If a position is already open for that ticker, explicitly address whether to MAINTAIN, ADD TO,
-REDUCE, or CLOSE the position based on the current signal — do not ignore existing positions.
+REDUCE, or CLOSE the position based on the current signal – do not ignore existing positions.
 Then write a 2-3 sentence portfolio summary and a brief risk note for the human trader.
 
 Respond ONLY with valid JSON matching this schema:
@@ -513,18 +495,18 @@ Respond ONLY with valid JSON matching this schema:
   "risk_notes": "..."
 }}
 
-Use exactly the action and sizing_pct values provided above — do not change the numbers.
-Write the reasoning and summaries only. Be specific and complete — do not truncate.
+Use exactly the action and sizing_pct values provided above – do not change the numbers.
+Write the reasoning and summaries only. Be specific and complete – do not truncate.
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Main agent node
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def portfolio_manager_agent(state: AgentState) -> dict:
     """
-    LangGraph node — Portfolio Manager.
+    LangGraph node – Portfolio Manager.
     Reads analyst_signals + risk_report from state.
     Writes portfolio_recommendations to state["data"]["portfolio_recommendations"].
     """
@@ -537,15 +519,15 @@ def portfolio_manager_agent(state: AgentState) -> dict:
 
     progress.update_status(AGENT_ID, None, "Aggregating weighted signals")
 
-    # ── 0. Carica posizioni aperte da SQLite ────────────────────────────
+    # ── 0. Carica posizioni aperte da SQLite ──────────────────────────────
     open_positions = _load_open_positions()
     if open_positions:
         progress.update_status(AGENT_ID, None, f"Trovate {len(open_positions)} posizioni aperte")
 
-    # ── 1. Weighted signal aggregation ──────────────────────────────────
+    # ── 1. Weighted signal aggregation ────────────────────────────────────
     weighted = _weighted_signals(state, tickers)
 
-    # ── 2. Pre-compute sizing (no LLM) ──────────────────────────────────
+    # ── 2. Pre-compute sizing (no LLM) ────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Computing position sizing")
     pre_recs: list[dict] = []
     for ticker in tickers:
@@ -556,18 +538,17 @@ def portfolio_manager_agent(state: AgentState) -> dict:
             "action": action,
             "sizing_pct": sizing,
             "conviction": conviction,
-            "reasoning": "",  # filled by LLM
+            "reasoning": "",
         })
 
-    # Normalise sizing so BUY positions sum to ≤100% (with correlation penalty)
     pre_recs = _normalise_sizing(pre_recs, risk_report)
 
-    # ── 3. Select top trades and enrich with operational levels ─────────
+    # ── 3. Select top trades and enrich with operational levels ───────────
     progress.update_status(AGENT_ID, None, "Selecting top trades and enriching with ATR levels")
     pre_recs = _select_top_trades(pre_recs)
     pre_recs = _enrich_with_trade_levels(pre_recs, risk_report, weighted)
 
-    # ── 4. LLM for reasoning text (con posizioni aperte nel contesto) ───
+    # ── 4. LLM for reasoning text ─────────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Generating reasoning via LLM")
     prompt = _build_llm_prompt(tickers, weighted, risk_report, pre_recs, open_positions)
 
@@ -580,7 +561,6 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         )
 
         if isinstance(llm_result, PortfolioOutput):
-            # Merge LLM reasoning into pre_recs (keep our numbers, use LLM text)
             llm_map = {r.ticker: r for r in llm_result.recommendations}
             for rec in pre_recs:
                 llm_rec = llm_map.get(rec["ticker"])
@@ -589,7 +569,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
             portfolio_summary = llm_result.portfolio_summary
             risk_notes = llm_result.risk_notes
         else:
-            portfolio_summary = "LLM output parsing failed — see raw signals."
+            portfolio_summary = "LLM output parsing failed – see raw signals."
             risk_notes = "; ".join(risk_report.get("warnings", []))
 
     except Exception as e:
@@ -604,12 +584,12 @@ def portfolio_manager_agent(state: AgentState) -> dict:
                     f"action {rec['action']} at {rec['sizing_pct']}%."
                 )
 
-    # ── 5. Salva posizioni aperte nell'output per il report ─────────────
+    # ── 5. Salva posizioni aperte nell'output per il report ───────────────
     portfolio_recommendations = {
         "recommendations": pre_recs,
         "portfolio_summary": portfolio_summary,
         "risk_notes": risk_notes,
-        "open_positions": open_positions,   # ← incluse per il report
+        "open_positions": open_positions,
         "total_long_pct": round(
             sum(r["sizing_pct"] for r in pre_recs if r["action"] == "BUY"), 1
         ),
