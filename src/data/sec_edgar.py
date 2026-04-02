@@ -16,7 +16,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 BASE_URL          = "https://data.sec.gov"
 SUBMISSIONS_URL   = "https://data.sec.gov/submissions"
 COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts"
@@ -26,7 +26,6 @@ RATE_LIMIT_DELAY = 0.11          # seconds between requests (≤ 10 req/sec)
 CACHE_TTL_DAYS   = 7
 CACHE_DIR        = Path("cache/sec_edgar")
 
-# SEC requires a descriptive User-Agent to avoid being blocked
 HEADERS = {
     "User-Agent": "AthanorAlpha research@athanor-alpha.com",
     "Accept-Encoding": "gzip, deflate"
@@ -35,13 +34,11 @@ HEADERS = {
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 def _cache_path(key: str) -> Path:
-    """Return the file path for a given cache key."""
     safe_key = key.replace("/", "_").replace(":", "_")
     return CACHE_DIR / f"{safe_key}.json"
 
 
 def _cache_read(key: str) -> Optional[dict]:
-    """Return cached data if it exists and is within TTL, else None."""
     path = _cache_path(key)
     if not path.exists():
         return None
@@ -59,7 +56,6 @@ def _cache_read(key: str) -> Optional[dict]:
 
 
 def _cache_write(key: str, data: dict) -> None:
-    """Write data to disk cache with current timestamp."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _cache_path(key)
     entry = {
@@ -78,11 +74,12 @@ class SECFetcher:
     """
     Fetches SEC EDGAR filings for a list of tickers.
     All results are cached to disk for 7 days.
+    Crypto assets (tickers ending in -USD) are skipped — they are not
+    registered with the SEC and have no CIK.
     """
 
     def __init__(self):
         self.session = requests.Session()
-        # No persistent Host header — let requests set it per-request
         self.session.headers.update({
             "User-Agent": "AthanorAlpha research@athanor-alpha.com",
             "Accept-Encoding": "gzip, deflate",
@@ -92,7 +89,6 @@ class SECFetcher:
 
     # ── Rate limiter ──────────────────────────────────────────────────────────
     def _get(self, url: str, params: dict = None) -> dict:
-        """HTTP GET with rate limiting. Raises on HTTP error."""
         elapsed = time.time() - self._last_request_time
         if elapsed < RATE_LIMIT_DELAY:
             time.sleep(RATE_LIMIT_DELAY - elapsed)
@@ -103,24 +99,19 @@ class SECFetcher:
         response.raise_for_status()
         return response.json()
 
-    # ── Placeholder methods (implemented in next steps) ───────────────────────
     def _get_cik(self, ticker: str) -> Optional[str]:
         """Resolve ticker → zero-padded 10-digit CIK."""
         ticker = ticker.upper()
 
-        # Return from in-memory map if already resolved
         if ticker in self._cik_map:
             return self._cik_map[ticker]
 
-        # Try disk cache first
         cache_key = f"cik_map"
         cik_map = _cache_read(cache_key)
 
         if cik_map is None:
-            # Download the full ticker→CIK map from SEC (one-time fetch)
             logger.info("Downloading CIK map from SEC EDGAR...")
             raw = self._get(TICKER_CIK_URL)
-            # SEC returns {0: {cik_str, ticker, title}, 1: {...}, ...}
             cik_map = {
                 v["ticker"].upper(): str(v["cik_str"]).zfill(10)
                 for v in raw.values()
@@ -134,7 +125,6 @@ class SECFetcher:
         return result
 
     def _get_submissions(self, cik: str) -> dict:
-        """Download submission history for a CIK (cached)."""
         cache_key = f"submissions_{cik}"
         cached = _cache_read(cache_key)
         if cached is not None:
@@ -142,7 +132,6 @@ class SECFetcher:
             return cached
 
         url = f"{SUBMISSIONS_URL}/CIK{cik}.json"
-        # Host header must change for this endpoint
         self.session.headers.update({
             "User-Agent": "AthanorAlpha research@athanor-alpha.com",
             "Accept-Encoding": "gzip, deflate",
@@ -180,7 +169,6 @@ class SECFetcher:
             "xbrl_metrics": {},
         }
 
-        # ── Submissions (filing history) ──────────────────────────────────
         try:
             subs = self._get_submissions(cik)
             filings = subs.get("filings", {}).get("recent", {})
@@ -208,19 +196,15 @@ class SECFetcher:
         except Exception as e:
             logger.warning(f"Submissions fetch failed for {ticker}: {e}")
 
-        # ── XBRL company facts (key metrics) ─────────────────────────────
         try:
             facts_url = f"{COMPANY_FACTS_URL}/CIK{cik}.json"
             facts = self._get(facts_url)
             us_gaap = facts.get("facts", {}).get("us-gaap", {})
 
             def latest_value(concept: str) -> float | None:
-                """Extract the most recent annual value for a GAAP concept."""
                 data = us_gaap.get(concept, {})
                 units = data.get("units", {})
-                # Try USD first, then pure numbers
                 entries = units.get("USD", units.get("pure", []))
-                # Keep only 10-K annual filings
                 annual = [e for e in entries if e.get("form") == "10-K"]
                 if not annual:
                     return None
@@ -244,10 +228,18 @@ class SECFetcher:
     def fetch_all(self, tickers: list[str]) -> dict[str, dict]:
         """
         Fetch SEC filings for all tickers.
+        Crypto assets (tickers ending in -USD) are skipped entirely —
+        they are not registered with the SEC and have no CIK.
         Returns dict: ticker → filings dict.
         """
         results = {}
         for ticker in tickers:
+            # ── Skip crypto: not registered with the SEC ──────────────────
+            if ticker.endswith("-USD"):
+                logger.debug(f"SECFetcher: skipping crypto ticker {ticker}")
+                results[ticker] = {"skipped": "crypto asset, no SEC filings"}
+                continue
+
             logger.info(f"SECFetcher: fetching {ticker}...")
             try:
                 results[ticker] = self.get_filings(ticker)
