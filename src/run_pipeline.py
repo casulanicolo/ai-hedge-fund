@@ -88,7 +88,7 @@ def _get_conn():
 def _record_run_start(conn, run_id, tickers, mode):
     conn.execute(
         "INSERT INTO pipeline_runs (run_id, started_at, status, tickers) VALUES (?,?,?,?)",
-        (run_id, datetime.now(timezone.utc).isoformat(), f"running:{mode}", json.dumps(tickers)),
+        (run_id, datetime.now(timezone.utc).isoformat(), "running", json.dumps(tickers)),
     )
     conn.commit()
 
@@ -440,7 +440,7 @@ def run_pipeline(tickers, send_email=True, mode="full"):
         else:
             log.info("[4/4] Email saltata.")
 
-        _record_run_end(conn, run_id, f"completed:{mode}")
+        _record_run_end(conn, run_id, "completed")
         log.info("=" * 60)
         log.info(f"RUN COMPLETATO CON SUCCESSO — run_id={run_id[:8]}")
         log.info("=" * 60)
