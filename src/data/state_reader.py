@@ -1,4 +1,4 @@
-﻿"""
+"""
 src/data/state_reader.py
 ------------------------
 Athanor Alpha - typed helper functions to read prefetched data from AgentState.
@@ -298,6 +298,84 @@ def get_operating_margin(state: dict, ticker: str) -> Optional[float]:
     if op_income is None or revenue is None or revenue == 0:
         return None
     return op_income / revenue
+
+
+def get_atr(state: dict, ticker: str, period: int = 14) -> float:
+    """
+    ATR (Average True Range) normalizzato come percentuale del prezzo attuale.
+
+    Misura la volatilità giornaliera media del titolo negli ultimi `period`
+    giorni (default 14). Un valore di 0.02 significa che il titolo si muove
+    mediamente del 2% al giorno.
+
+    Usato dal Portfolio Manager per il Volatility Targeting:
+      raw_size = target_daily_vol / atr_pct
+      (es. target=1%, ATR=2% -> raw_size=50% -> clippato a max 15%)
+
+    Returns:
+      float: ATR / close_price, tipicamente tra 0.005 e 0.05.
+             Ritorna 0.02 (default conservativo) se i dati sono insufficienti.
+    """
+    DEFAULT_ATR = 0.02  # fallback: assume 2% di volatilità giornaliera
+
+    df = get_ohlcv_daily(state, ticker)
+    if df is None or len(df) < period + 1:
+        logger.warning(
+            "get_atr: dati insufficienti per '%s' (righe=%s, period=%s) -> uso default %.4f",
+            ticker, len(df) if df is not None else 0, period, DEFAULT_ATR,
+        )
+        return DEFAULT_ATR
+
+    # Assicura che le colonne siano minuscole (yfinance può restituire
+    # sia 'High' che 'high' a seconda della versione)
+    df = df.copy()
+    df.columns = [c.lower() for c in df.columns]
+
+    # Controlla che le colonne necessarie esistano
+    required = {"high", "low", "close"}
+    if not required.issubset(df.columns):
+        logger.warning(
+            "get_atr: colonne mancanti per '%s' (trovate: %s) -> uso default",
+            ticker, list(df.columns),
+        )
+        return DEFAULT_ATR
+
+    try:
+        import ta
+        atr_indicator = ta.volatility.AverageTrueRange(
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            window=period,
+            fillna=False,
+        )
+        atr_series = atr_indicator.average_true_range()
+
+        # Prende l'ultimo valore non-NaN
+        atr_value = atr_series.dropna().iloc[-1]
+        close_price = df["close"].iloc[-1]
+
+        if close_price <= 0:
+            logger.warning("get_atr: prezzo <= 0 per '%s' -> uso default", ticker)
+            return DEFAULT_ATR
+
+        atr_pct = float(atr_value / close_price)
+
+        # Sanity check: ATR% fuori range plausibile -> usa default
+        if not (0.001 <= atr_pct <= 0.20):
+            logger.warning(
+                "get_atr: ATR%% fuori range per '%s' (%.4f) -> uso default",
+                ticker, atr_pct,
+            )
+            return DEFAULT_ATR
+
+        logger.info("get_atr: %s ATR(%d)=%%.4f prezzo=%.2f ATR%%=%.4f",
+                    ticker, period, atr_value, close_price, atr_pct)
+        return atr_pct
+
+    except Exception as exc:
+        logger.warning("get_atr: errore per '%s': %s -> uso default", ticker, exc)
+        return DEFAULT_ATR
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ from src.utils.progress import progress
 
 AGENT_ID = "portfolio_manager"
 
-# ── Sizing parameters ─────────────────────────────────────────────────────────
+# ── Sizing parameters ────────────────────────────────────────────────────────
 MAX_SINGLE_POSITION   = 20.0
 MIN_SINGLE_POSITION   = 2.0
 TOTAL_GROSS_BUDGET    = 100.0
@@ -114,10 +114,10 @@ def _collect_signals_for_ticker(state: AgentState, ticker: str) -> list[dict]:
         # Only include signals with the new format
         if "direction" in sig and "expected_return" in sig and "confidence" in sig:
             signals.append({
-                "agent_id":       agent_id,
-                "direction":      sig.get("direction", "NEUTRAL"),
+                "agent_id":        agent_id,
+                "direction":       sig.get("direction", "NEUTRAL"),
                 "expected_return": float(sig.get("expected_return", 0.0)),
-                "confidence":     float(sig.get("confidence", 0.5)),
+                "confidence":      float(sig.get("confidence", 0.5)),
             })
 
     return signals
@@ -197,7 +197,7 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
                 continue
 
             # Support both old format (signal) and new format (direction)
-            direction = sig_data.get("direction")
+            direction  = sig_data.get("direction")
             signal_raw = sig_data.get("signal", "neutral")
 
             if direction:
@@ -275,6 +275,100 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
 # Sizing logic
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _load_risk_params() -> dict:
+    """
+    Carica i parametri di rischio da config/risk_params.yaml.
+    Se il file non esiste o c'è un errore, usa valori di default conservativi.
+    """
+    defaults = {
+        "target_daily_vol": 0.01,
+        "kelly_fraction":   0.5,
+        "max_position_pct": 0.15,
+        "min_position_pct": 0.02,
+        "wc_threshold":     0.008,
+        "sector_cap":       0.30,
+    }
+    try:
+        import yaml
+        with open("config/risk_params.yaml", "r") as f:
+            loaded = yaml.safe_load(f)
+        if isinstance(loaded, dict):
+            defaults.update(loaded)
+    except Exception:
+        pass
+    return defaults
+
+
+def compute_vol_adjusted_size(atr_pct: float, params: dict) -> float:
+    """
+    Calcola la dimensione della posizione basandosi sulla volatilità del titolo
+    (Volatility Targeting).
+
+    Logica:
+      raw_size = target_daily_vol / atr_pct
+
+    Esempio:
+      - target_vol=1%, ATR%=2%  → raw_size=50%  → clippato a max 15%
+      - target_vol=1%, ATR%=0.5% → raw_size=200% → clippato a max 15%
+      - target_vol=1%, ATR%=5%  → raw_size=20%  → clippato a max 15%
+
+    Restituisce una percentuale del portafoglio come float (es. 0.08 = 8%).
+    """
+    target_vol    = float(params.get("target_daily_vol", 0.01))
+    max_pos       = float(params.get("max_position_pct", 0.15))
+    min_pos       = float(params.get("min_position_pct", 0.02))
+
+    if atr_pct <= 0:
+        return min_pos
+
+    raw_size = target_vol / atr_pct
+
+    # Clippa tra min e max
+    sized = max(min_pos, min(raw_size, max_pos))
+    return round(sized, 4)
+
+
+def compute_half_kelly(p_win: float, reward_ratio: float, params: dict) -> float:
+    """
+    Calcola la dimensione della posizione con la formula Half-Kelly.
+
+    Kelly intero: f = (p_win * (reward_ratio + 1) - 1) / reward_ratio
+    Half-Kelly:   half_f = f * kelly_fraction  (default 0.5)
+
+    Parametri:
+      p_win         – probabilità stimata di vincere (usa avg_confidence degli agenti LONG)
+      reward_ratio  – expected_return / stop_loss stimato (es. target 2%, SL 1% → ratio=2.0)
+      params        – dizionario da risk_params.yaml
+
+    Esempi:
+      p_win=0.6, reward_ratio=2.0 → Kelly=0.40 → Half=0.20 → clippato a max 0.15
+      p_win=0.4, reward_ratio=2.0 → Kelly negativo → ritorna 0.0 (non entrare)
+      p_win=0.55, reward_ratio=1.5 → Kelly=0.175 → Half=0.0875
+
+    Restituisce una percentuale del portafoglio come float (es. 0.10 = 10%).
+    Kelly negativo o zero significa segnale debole: ritorna 0.0.
+    """
+    kelly_fraction = float(params.get("kelly_fraction", 0.5))
+    max_pos        = float(params.get("max_position_pct", 0.15))
+
+    if reward_ratio <= 0 or p_win <= 0:
+        return 0.0
+
+    # Formula Kelly intera
+    kelly_f = (p_win * (reward_ratio + 1) - 1) / reward_ratio
+
+    # Kelly negativo = expected value negativo = non entrare
+    if kelly_f <= 0:
+        return 0.0
+
+    # Applica la frazione (Half-Kelly di default)
+    half_f = kelly_f * kelly_fraction
+
+    # Clippa a [0, max_position_pct]
+    sized = min(half_f, max_pos)
+    return round(sized, 4)
+
+
 def _kelly_sizing(edge: float, rr_ratio: float) -> float:
     if rr_ratio <= 0 or edge <= 0:
         return 0.0
@@ -287,11 +381,20 @@ def _compute_sizing(
     ticker: str,
     agg: dict,
     risk_report: dict,
+    state: dict | None = None,
 ) -> tuple[float, float, str, float]:
     """
     Returns (sizing_pct, conviction_score, action, consensus_ratio).
-    Now also applies WC_THRESHOLD filter.
+
+    Fase 2: sizing dinamico con Volatility Targeting + Half-Kelly.
+    Il sizing finale è il minimo tra:
+      - vol_adjusted_size: basato su ATR del titolo (quanto è volatile)
+      - half_kelly_size:   basato su conviction e reward/risk (qualità segnale)
+    Entrambi i valori sono in percentuale del portafoglio (0-100).
     """
+    import logging
+    log = logging.getLogger(__name__)
+
     net_score  = agg.get("net_score", 0.0)
     avg_conf   = agg.get("avg_confidence", 0.5)
     net_signal = agg.get("net_signal", "neutral")
@@ -323,13 +426,44 @@ def _compute_sizing(
 
     trade_levels = risk_report.get("trade_levels", {}).get(ticker, {})
     rr_ratio = float(trade_levels.get("rr_ratio", 2.0))
-    edge = conviction
 
-    sizing = _kelly_sizing(edge, rr_ratio)
+    # ── Fase 2: Volatility Targeting + Half-Kelly ─────────────────────────
+    params = _load_risk_params()
 
-    if sizing < MIN_SINGLE_POSITION and conviction >= 0.15:
-        sizing = MIN_SINGLE_POSITION
+    # 1. Vol-adjusted size: usa ATR se abbiamo lo state, altrimenti default
+    if state is not None:
+        from src.data.state_reader import get_atr
+        atr_pct = get_atr(state, ticker)
+    else:
+        atr_pct = params.get("target_daily_vol", 0.01)  # fallback conservativo
 
+    vol_size = compute_vol_adjusted_size(atr_pct, params)  # es. 0.08 = 8%
+
+    # 2. Half-Kelly size: usa avg_confidence come p_win
+    #    reward_ratio = rr_ratio dal risk manager (già disponibile)
+    p_win = avg_conf
+    kelly_size = compute_half_kelly(p_win, rr_ratio, params)  # es. 0.10 = 10%
+
+    # 3. Sizing finale = minimo tra i due (approccio conservativo)
+    #    Converte da [0,1] a [0,100] per coerenza con il resto del PM
+    dynamic_sizing_pct = min(vol_size, kelly_size) * 100.0
+
+    log.info(
+        "_compute_sizing %s: ATR%%=%.3f vol_size=%.1f%% kelly_size=%.1f%% → final=%.1f%%",
+        ticker, atr_pct, vol_size * 100, kelly_size * 100, dynamic_sizing_pct,
+    )
+
+    # Fallback: se entrambi sono zero usa il sizing precedente (legacy)
+    if dynamic_sizing_pct <= 0:
+        edge = conviction
+        dynamic_sizing_pct = _kelly_sizing(edge, rr_ratio)
+        if dynamic_sizing_pct < MIN_SINGLE_POSITION and conviction >= 0.15:
+            dynamic_sizing_pct = MIN_SINGLE_POSITION
+
+    sizing = dynamic_sizing_pct
+    # ── Fine Fase 2 ───────────────────────────────────────────────────────
+
+    # Applica penalità di rischio (invariate dalla logica precedente)
     ticker_flags = risk_report.get("ticker_flags", {}).get(ticker, [])
     risk_penalty = 0.8 if ticker_flags else 1.0
 
@@ -551,7 +685,7 @@ Respond ONLY with valid JSON matching this schema:
   "risk_notes": "..."
 }}
 
-Use exactly the action and sizing_pct values provided above — do not change the numbers.
+Use exactly the action and sizing_pct values provided above – do not change the numbers.
 """
 
 
@@ -587,7 +721,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     pre_recs: list[dict] = []
     for ticker in tickers:
         agg = weighted.get(ticker, {})
-        sizing, conviction, action, consensus_ratio = _compute_sizing(ticker, agg, risk_report)
+        sizing, conviction, action, consensus_ratio = _compute_sizing(ticker, agg, risk_report, state=state)
         pre_recs.append({
             "ticker":              ticker,
             "action":              action,
@@ -626,7 +760,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
             portfolio_summary = llm_result.portfolio_summary
             risk_notes        = llm_result.risk_notes
         else:
-            portfolio_summary = "LLM output parsing failed — see raw signals."
+            portfolio_summary = "LLM output parsing failed – see raw signals."
             risk_notes        = "; ".join(risk_report.get("warnings", []))
 
     except Exception as e:
@@ -644,7 +778,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
 
     # 5. Build output
     portfolio_recommendations = {
-        "recommendations":  pre_recs,
+        "recommendations":   pre_recs,
         "portfolio_summary": portfolio_summary,
         "risk_notes":        risk_notes,
         "open_positions":    open_positions,

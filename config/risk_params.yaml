@@ -1,0 +1,18 @@
+# Athanor Alpha — Risk Parameters
+# Fase 2: Position Sizing (Volatility Targeting + Half-Kelly)
+
+# Volatility Targeting
+target_daily_vol: 0.01       # volatilità target giornaliera del portafoglio (1%)
+
+# Half-Kelly
+kelly_fraction: 0.5          # usa Half-Kelly (50% del Kelly intero)
+
+# Position Limits
+max_position_pct: 0.15       # nessuna posizione supera il 15% del portafoglio
+min_position_pct: 0.02       # nessuna posizione scende sotto il 2% del portafoglio
+
+# Weighted Conviction Threshold (dalla Fase 1)
+wc_threshold: 0.008          # soglia minima Weighted Conviction per entrare in posizione
+
+# Sector Cap (Fase 6 - già incluso per completezza)
+sector_cap: 0.30             # massimo 30% esposto su un singolo settore
