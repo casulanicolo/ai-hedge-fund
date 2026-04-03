@@ -1,19 +1,22 @@
 """
-risk_manager.py — Athanor Alpha Phase 3.5
+risk_manager.py – Athanor Alpha Phase 3.5 + Fase 6 (Sector Cap Enforcement)
 Reads all analyst signals from state, computes:
   - Correlation matrix (10 tickers)
   - Sector concentration
+  - Sector cap enforcement (max 30% per sector, from risk_params.yaml)
   - Parametric VaR
   - Max drawdown limit check
   - ATR-based trade levels (entry, stop loss, take profit) for BUY/SELL tickers
-Writes risk_report to state. Does NOT block signals — only annotates.
+Writes risk_report to state. Does NOT block signals – only annotates.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import numpy as np
 import pandas as pd
+import yaml
 from typing import Any
 
 from langchain_core.messages import HumanMessage
@@ -49,6 +52,19 @@ SECTOR_MAP: dict[str, str] = {
     "BNB-USD": "Crypto",
 }
 
+# ── Load risk parameters from YAML ────────────────────────────────────────────
+def _load_risk_params() -> dict:
+    """Load risk_params.yaml. Returns defaults if file is missing or malformed."""
+    yaml_path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "config", "risk_params.yaml"
+    )
+    yaml_path = os.path.normpath(yaml_path)
+    try:
+        with open(yaml_path, "r") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
 # ── Risk thresholds ────────────────────────────────────────────────────────────
 VAR_CONFIDENCE = 0.95          # 95% VaR
 MAX_SECTOR_PCT = 0.60          # >60% of bullish signals in one sector → warning
@@ -58,8 +74,8 @@ MAX_SINGLE_TICKER_PCT = 0.25   # single ticker >25% sizing → warning
 
 # ── Trade level parameters ─────────────────────────────────────────────────────
 ATR_PERIOD  = 14    # ATR lookback (Wilder's smoothing)
-ATR_SL_MULT = 2.0   # Stop Loss = entry ± 2×ATR
-ATR_TP_MULT = 4.0   # Take Profit = entry ∓ 4×ATR  →  R/R = 1:2
+ATR_SL_MULT = 1.0   # Stop Loss = entry ± 1×ATR
+ATR_TP_MULT = 2.0   # Take Profit = entry ∓ 2×ATR  →  R/R = 1:2
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -77,9 +93,8 @@ def _get_returns(state: AgentState, tickers: list[str]) -> pd.DataFrame:
 
     for ticker in tickers:
         payload = prefetched.get(ticker, {})
-        hist = payload.get("ohlcv_daily")  # expected: pd.DataFrame or dict
+        hist = payload.get("ohlcv_daily")
 
-        # Handle both DataFrame and dict-of-lists from prefetch cache
         try:
             if isinstance(hist, pd.DataFrame) and not hist.empty:
                 close = hist["Close"].dropna()
@@ -119,9 +134,6 @@ def _correlation_matrix(returns: pd.DataFrame) -> dict:
 def _historical_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
     """
     Historical (empirical) portfolio VaR at VAR_CONFIDENCE level.
-    Usa il percentile empirico dei return storici — più accurato del VaR
-    gaussiano in presenza di fat tails (crash, volatilità estrema).
-
     weights: {ticker: weight_fraction}  (must sum to 1)
     Returns daily VaR as a positive fraction (e.g. 0.032 = 3.2%).
     """
@@ -133,13 +145,10 @@ def _historical_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
         return 0.0
 
     w = np.array([weights[t] for t in tickers])
-    w = w / w.sum()  # re-normalise
+    w = w / w.sum()
 
-    # Portfolio return series (weighted sum of asset returns)
     port_returns = returns[tickers].values @ w
 
-    # VaR = negative of the (1 - confidence) percentile
-    # Es. 95% VaR → 5° percentile della distribuzione dei rendimenti
     percentile = (1 - VAR_CONFIDENCE) * 100
     var = -float(np.percentile(port_returns, percentile))
     return max(0.0, round(var, 4))
@@ -186,6 +195,77 @@ def _sector_concentration(bullish_tickers: list[str]) -> dict[str, float]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Fase 6 – Sector Cap Enforcement
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _enforce_sector_cap(
+    bullish_tickers: list[str],
+    agg: dict[str, dict],
+    sector_cap: float,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Enforce sector cap: no single sector can represent more than `sector_cap`
+    fraction of the bullish tickers selected.
+
+    Strategy: within each over-weight sector, drop the tickers with the
+    lowest avg_confidence first, until the sector is within the cap.
+
+    Returns:
+        approved  – tickers that pass the sector cap
+        excluded  – tickers dropped due to sector cap
+        log_lines – human-readable log entries for each sector decision
+    """
+    if not bullish_tickers:
+        return [], [], []
+
+    # Group tickers by sector
+    by_sector: dict[str, list[str]] = {}
+    for t in bullish_tickers:
+        sector = SECTOR_MAP.get(t, "Unknown")
+        by_sector.setdefault(sector, []).append(t)
+
+    total = len(bullish_tickers)
+    max_allowed_per_sector = max(1, int(sector_cap * total))  # floor at 1
+
+    approved: list[str] = []
+    excluded: list[str] = []
+    log_lines: list[str] = []
+
+    for sector, tickers in by_sector.items():
+        n_in_sector = len(tickers)
+        sector_frac = round(n_in_sector / total, 3)
+
+        if n_in_sector <= max_allowed_per_sector:
+            # Sector is within cap – keep all
+            approved.extend(tickers)
+            log_lines.append(
+                f"[SECTOR CAP] {sector}: {n_in_sector}/{total} tickers "
+                f"({sector_frac*100:.0f}%) — OK (cap {int(sector_cap*100)}%)"
+            )
+        else:
+            # Sector exceeds cap – sort by confidence descending, keep top N
+            sorted_tickers = sorted(
+                tickers,
+                key=lambda t: agg.get(t, {}).get("avg_confidence", 0.0),
+                reverse=True,
+            )
+            kept = sorted_tickers[:max_allowed_per_sector]
+            dropped = sorted_tickers[max_allowed_per_sector:]
+
+            approved.extend(kept)
+            excluded.extend(dropped)
+
+            log_lines.append(
+                f"[SECTOR CAP] {sector}: {n_in_sector}/{total} tickers "
+                f"({sector_frac*100:.0f}%) — CAPPED to {max_allowed_per_sector} "
+                f"(cap {int(sector_cap*100)}%). "
+                f"Kept: {kept}. Dropped: {dropped}."
+            )
+
+    return approved, excluded, log_lines
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ATR-based trade levels
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -219,10 +299,10 @@ def _compute_trade_levels(
 ) -> dict[str, dict]:
     """
     For each ticker with bullish or bearish net signal, compute operational
-    trade levels from the ATR of the last ATR_PERIOD candles:
+    trade levels from the ATR of the last ATR_PERIOD candles.
 
-      BUY  → entry = last close, SL = entry − 2×ATR, TP = entry + 4×ATR
-      SELL → entry = last close, SL = entry + 2×ATR, TP = entry − 4×ATR
+      BUY  → entry = last close, SL = entry − 1×ATR, TP = entry + 2×ATR
+      SELL → entry = last close, SL = entry + 1×ATR, TP = entry − 2×ATR
 
     R/R ratio is always ATR_TP_MULT / ATR_SL_MULT = 2.0.
     Tickers with neutral signal or missing OHLCV are skipped.
@@ -238,7 +318,6 @@ def _compute_trade_levels(
         payload = prefetched.get(ticker, {})
         ohlcv   = payload.get("ohlcv_daily")
 
-        # Normalise to DataFrame if stored as dict-of-lists
         if isinstance(ohlcv, dict) and "Close" in ohlcv:
             try:
                 ohlcv = pd.DataFrame(ohlcv)
@@ -272,7 +351,7 @@ def _compute_trade_levels(
             "stop_loss":   sl,
             "take_profit": tp,
             "atr":         round(atr, 4),
-            "rr_ratio":    round(ATR_TP_MULT / ATR_SL_MULT, 1),  # 2.0
+            "rr_ratio":    round(ATR_TP_MULT / ATR_SL_MULT, 1),
         }
 
     return result
@@ -300,7 +379,6 @@ def _aggregate_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]
             if not isinstance(agent_data, dict):
                 continue
 
-            # Agent data may be keyed by ticker or be a flat dict for one ticker
             if ticker in agent_data:
                 sig_data = agent_data[ticker]
             elif agent_data.get("ticker") == ticker:
@@ -358,54 +436,74 @@ def _aggregate_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]
 
 def risk_manager_agent(state: AgentState) -> dict:
     """
-    LangGraph node — Risk Manager.
+    LangGraph node – Risk Manager.
     Reads analyst_signals and prefetched_data from state.
     Writes risk_report to state["data"]["risk_report"].
     """
     data: dict[str, Any] = state.get("data", {})
     tickers: list[str] = data.get("tickers", list(SECTOR_MAP.keys()))
 
+    # ── Load configurable thresholds from risk_params.yaml ────────────────────
+    risk_params = _load_risk_params()
+    sector_cap: float = float(risk_params.get("sector_cap", 0.30))
+
     progress.update_status(AGENT_ID, None, "Aggregating analyst signals")
 
-    # ── 1. Aggregate signals across all agents ─────────────────────────────
+    # ── 1. Aggregate signals across all agents ────────────────────────────────
     agg = _aggregate_signals(state, tickers)
 
     bullish_tickers = [t for t, v in agg.items() if v["net_signal"] == "bullish"]
     bearish_tickers = [t for t, v in agg.items() if v["net_signal"] == "bearish"]
 
-    # ── 2. Equal-weight sizing for risk computation ────────────────────────
-    # Use bullish tickers only; uniform weights for now (portfolio manager
-    # will refine based on conviction later)
-    if bullish_tickers:
-        eq_weights = {t: 1.0 / len(bullish_tickers) for t in bullish_tickers}
+    # ── 2. Fase 6 – Enforce sector cap on bullish tickers ─────────────────────
+    progress.update_status(AGENT_ID, None, f"Enforcing sector cap ({int(sector_cap*100)}%)")
+    bullish_approved, bullish_excluded, sector_cap_log = _enforce_sector_cap(
+        bullish_tickers, agg, sector_cap
+    )
+
+    # Log sector cap decisions
+    for line in sector_cap_log:
+        print(line)
+
+    # ── 3. Equal-weight sizing for risk computation ────────────────────────────
+    # Use approved bullish tickers only
+    if bullish_approved:
+        eq_weights = {t: 1.0 / len(bullish_approved) for t in bullish_approved}
     else:
         eq_weights = {t: 1.0 / len(tickers) for t in tickers}
 
-    # ── 3. Historical returns ──────────────────────────────────────────────
+    # ── 4. Historical returns ──────────────────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Computing correlation matrix")
     returns = _get_returns(state, tickers)
 
     corr_matrix = _correlation_matrix(returns)
 
-    # ── 4. Sector concentration ────────────────────────────────────────────
-    sector_fractions = _sector_concentration(bullish_tickers)
+    # ── 5. Sector concentration (on approved tickers) ─────────────────────────
+    sector_fractions = _sector_concentration(bullish_approved)
     concentrated_sectors = {s: f for s, f in sector_fractions.items() if f > MAX_SECTOR_PCT}
 
-    # ── 5. VaR (Historical / empirical — più accurato con fat tails) ─────────
+    # ── 6. VaR (Historical / empirical) ───────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Computing historical VaR")
     try:
         daily_var = _historical_var(returns, eq_weights)
     except Exception:
         daily_var = 0.0
 
-    # ── 6. Max drawdown estimate ───────────────────────────────────────────
+    # ── 7. Max drawdown estimate ───────────────────────────────────────────────
     try:
         max_dd = _max_drawdown_estimate(returns, eq_weights)
     except Exception:
         max_dd = 0.0
 
-    # ── 7. Warnings ───────────────────────────────────────────────────────
+    # ── 8. Warnings ────────────────────────────────────────────────────────────
     warnings: list[str] = []
+
+    # Sector cap exclusions → warning
+    if bullish_excluded:
+        warnings.append(
+            f"Sector cap ({int(sector_cap*100)}%): {len(bullish_excluded)} ticker(s) "
+            f"excluded — {bullish_excluded}"
+        )
 
     if concentrated_sectors:
         for sector, frac in concentrated_sectors.items():
@@ -423,8 +521,15 @@ def risk_manager_agent(state: AgentState) -> dict:
             f"Historical max drawdown: {max_dd*100:.1f}% (threshold {MAX_DRAWDOWN_LIMIT*100:.0f}%)"
         )
 
-    # ── 8. Per-ticker risk flags ───────────────────────────────────────────
+    # ── 9. Per-ticker risk flags ───────────────────────────────────────────────
     ticker_flags: dict[str, list[str]] = {t: [] for t in tickers}
+
+    # Mark excluded tickers with sector cap flag
+    for t in bullish_excluded:
+        ticker_flags.setdefault(t, []).append(
+            f"Excluded by sector cap ({int(sector_cap*100)}%): "
+            f"sector {SECTOR_MAP.get(t, 'Unknown')} over limit"
+        )
 
     # High pairwise correlation warning
     if corr_matrix:
@@ -437,27 +542,37 @@ def risk_manager_agent(state: AgentState) -> dict:
                     ticker_flags[t1].append(f"High correlation with {t2} ({c:.2f})")
                     ticker_flags[t2].append(f"High correlation with {t1} ({c:.2f})")
 
-    # ── 9. ATR-based trade levels (entry / SL / TP) ───────────────────────
+    # ── 10. ATR-based trade levels (entry / SL / TP) ──────────────────────────
+    # Compute only on approved bullish + all bearish tickers
     progress.update_status(AGENT_ID, None, "Computing ATR trade levels")
-    trade_levels = _compute_trade_levels(state, tickers, agg)
+    active_tickers = bullish_approved + bearish_tickers
+    trade_levels = _compute_trade_levels(state, active_tickers, agg)
 
-    # ── 9b. Macro regime (VIX) ────────────────────────────────────────────
+    # ── 11. Macro regime (VIX) ────────────────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Fetching VIX macro regime")
     try:
         macro_regime = detect_macro_regime()
     except Exception:
-        macro_regime = {"macro_regime": "CAUTION", "vix": None, "sizing_multiplier": 0.7, "description": "VIX unavailable"}
+        macro_regime = {
+            "macro_regime": "CAUTION",
+            "vix": None,
+            "sizing_multiplier": 0.7,
+            "description": "VIX unavailable",
+        }
 
     if macro_regime["macro_regime"] == "RISK_OFF":
-        warnings.append(f"MACRO RISK_OFF: {macro_regime['description']} — evitare nuovi long.")
+        warnings.append(f"MACRO RISK_OFF: {macro_regime['description']} – evitare nuovi long.")
     elif macro_regime["macro_regime"] == "CAUTION":
         warnings.append(f"MACRO CAUTION: {macro_regime['description']}")
 
-    # ── 10. Assemble risk report ───────────────────────────────────────────
+    # ── 12. Assemble risk report ───────────────────────────────────────────────
     risk_report = {
         "signal_summary": agg,
-        "bullish_tickers": bullish_tickers,
+        "bullish_tickers": bullish_approved,          # only approved tickers
+        "bullish_tickers_excluded": bullish_excluded, # Fase 6: excluded by sector cap
         "bearish_tickers": bearish_tickers,
+        "sector_cap": sector_cap,                     # Fase 6: cap used
+        "sector_cap_log": sector_cap_log,             # Fase 6: per-sector decision log
         "sector_concentration": sector_fractions,
         "concentrated_sectors": concentrated_sectors,
         "daily_var_95": daily_var,
@@ -470,26 +585,35 @@ def risk_manager_agent(state: AgentState) -> dict:
         "risk_ok": len(warnings) == 0,
     }
 
-    # ── 11. Write to state ────────────────────────────────────────────────
+    # ── 13. Write to state ─────────────────────────────────────────────────────
     data["risk_report"] = risk_report
     data["analyst_signals"][AGENT_ID] = {
-        "signal": "neutral",  # risk manager does not emit a trading signal
+        "signal": "neutral",
         "confidence": 1.0,
-        "reasoning": f"Risk check complete. Warnings: {len(warnings)}. "
-                     f"Daily VaR 95%: {daily_var*100:.1f}%. "
-                     f"Max DD estimate: {max_dd*100:.1f}%. "
-                     f"Trade levels computed for {len(trade_levels)} tickers.",
+        "reasoning": (
+            f"Risk check complete. Sector cap {int(sector_cap*100)}%: "
+            f"{len(bullish_approved)} approved, {len(bullish_excluded)} excluded. "
+            f"Warnings: {len(warnings)}. "
+            f"Daily VaR 95%: {daily_var*100:.1f}%. "
+            f"Max DD estimate: {max_dd*100:.1f}%. "
+            f"Trade levels computed for {len(trade_levels)} tickers."
+        ),
     }
 
-    # ── 12. Show reasoning ────────────────────────────────────────────────
+    # ── 14. Show reasoning ────────────────────────────────────────────────────
     show_agent_reasoning(risk_report, AGENT_ID)
 
     summary = (
-        f"Risk Manager | {len(bullish_tickers)} bullish / {len(bearish_tickers)} bearish "
+        f"Risk Manager | {len(bullish_approved)} bullish approved "
+        f"({len(bullish_excluded)} excluded by sector cap) "
+        f"/ {len(bearish_tickers)} bearish "
         f"| VaR {daily_var*100:.1f}% | MaxDD {max_dd*100:.1f}% "
         f"| Trade levels: {len(trade_levels)} | Warnings: {len(warnings)}"
     )
-    progress.update_status(AGENT_ID, None, "Done" if not warnings else f"⚠ {len(warnings)} warnings")
+    progress.update_status(
+        AGENT_ID, None,
+        "Done" if not warnings else f"⚠ {len(warnings)} warnings"
+    )
 
     message = HumanMessage(content=summary, name=AGENT_ID)
 
