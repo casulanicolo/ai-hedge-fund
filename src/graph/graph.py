@@ -35,6 +35,9 @@ Topology (grafo statico, comportamento condizionale via skip wrapper)
                            prediction_log_node ← saltato se skip_prediction_log=True
                                  │
                                  ▼
+                          time_exit_node       ← saltato se skip_time_exit=True
+                                 │
+                                 ▼
                                END
 
 Fase 4: Routine Operativa Multi-Slot
@@ -43,6 +46,11 @@ Il grafo è compilato una sola volta (statico). Il comportamento condizionale
 è ottenuto tramite _make_conditional_analyst() e _make_conditional_node():
 ogni nodo legge state["metadata"] e decide se eseguire o passare lo stato
 invariato. I flag sono scritti in metadata da run_pipeline.py in base al --mode.
+
+Fase 5: Time-Based Exit Rule
+-------------------------------------
+time_exit_node è attivo solo in modalità 'review' (skip_time_exit=False).
+Controlla positions.json e invia alert email per posizioni aperte >= 4 sessioni.
 
 Notes
 -----
@@ -67,9 +75,9 @@ logger = logging.getLogger(__name__)
 logging.getLogger("yfinance").setLevel(logging.WARNING)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 
 def _stub(name: str) -> Callable[[AgentState], AgentState]:
     """Return a no-op stub that logs and passes state through unchanged."""
@@ -114,8 +122,8 @@ def _make_conditional_analyst(node_name: str, fn: Callable) -> Callable:
 
 def _make_conditional_node(node_name: str, fn: Callable, skip_key: str) -> Callable:
     """
-    Wrappa un nodo post-analyst (devils_advocate, risk_manager, prediction_log)
-    con logica di skip condizionale basata su un flag booleano in metadata.
+    Wrappa un nodo post-analyst (devils_advocate, risk_manager, prediction_log,
+    time_exit) con logica di skip condizionale basata su un flag booleano in metadata.
 
     skip_key: chiave in state["metadata"] che se True fa saltare il nodo.
     """
@@ -130,9 +138,9 @@ def _make_conditional_node(node_name: str, fn: Callable, skip_key: str) -> Calla
     return _wrapped
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Agent node registry
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 
 # Prefetch node — gira sempre in tutti i mode
 DATA_PREFETCH_NODE = (
@@ -197,10 +205,21 @@ PREDICTION_LOG_NODE = (
     ),
 )
 
+# Fase 5: Time-Based Exit — saltato se skip_time_exit=True in metadata
+# Attivo solo in modalità 'review' (slot 21:00 UTC)
+TIME_EXIT_NODE = (
+    "time_exit",
+    _make_conditional_node(
+        "time_exit",
+        _import_or_stub("src.agents.time_exit_agent", "time_exit_agent", "time_exit"),
+        skip_key="skip_time_exit",
+    ),
+)
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ───────────────────────────────────────────────────────────────────────────────
 # Graph builder
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 
 def build_graph() -> StateGraph:
     """
@@ -233,6 +252,10 @@ def build_graph() -> StateGraph:
     log_name, log_fn = PREDICTION_LOG_NODE
     graph.add_node(log_name, log_fn)
 
+    # Fase 5: Time-Based Exit node
+    te_name, te_fn = TIME_EXIT_NODE
+    graph.add_node(te_name, te_fn)
+
     # 2. Edges (struttura fissa — il comportamento condizionale è nei wrapper)
     # START → prefetch
     graph.add_edge(START, prefetch_name)
@@ -245,25 +268,26 @@ def build_graph() -> StateGraph:
     for analyst_name in analyst_names:
         graph.add_edge(analyst_name, da_name)
 
-    # devils_advocate → risk_manager → portfolio_manager → prediction_log → END
+    # devils_advocate → risk_manager → portfolio_manager → prediction_log → time_exit → END
     graph.add_edge(da_name, risk_name)
     graph.add_edge(risk_name, pm_name)
     graph.add_edge(pm_name, log_name)
-    graph.add_edge(log_name, END)
+    graph.add_edge(log_name, te_name)
+    graph.add_edge(te_name, END)
 
     return graph.compile()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Module-level compiled graph (import and use directly)
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 
 compiled_graph = build_graph()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Quick smoke-test
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uuid

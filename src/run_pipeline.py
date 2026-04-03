@@ -1,12 +1,12 @@
 """
 Athanor Alpha — Pipeline principale.
-Esegue: prefetch → agenti → risk → portfolio → log predictions → email report.
+Esegue: prefetch → agenti → risk → portfolio → log predictions → time exit → email report.
 
 Uso:
     python -m src.run_pipeline                           # tutti i ticker, mode=full
     python -m src.run_pipeline AAPL MSFT NVDA            # dry run su 3 ticker
     python -m src.run_pipeline --mode light              # solo technicals + sentiment
-    python -m src.run_pipeline --mode review             # solo portfolio review
+    python -m src.run_pipeline --mode review             # solo portfolio review + time exit
     python -m src.run_pipeline AAPL MSFT --no-email      # senza email
 """
 
@@ -54,6 +54,7 @@ MODE_CONFIG = {
         "skip_devils_advocate": False,
         "skip_risk_manager":    False,
         "skip_prediction_log":  False,
+        "skip_time_exit":       True,   # Fase 5: non attivo al mattino
     },
     "light": {
         "description": "Mid-Day — technicals + sentiment (17:00 UTC)",
@@ -63,6 +64,7 @@ MODE_CONFIG = {
         "skip_devils_advocate": False,
         "skip_risk_manager":    True,
         "skip_prediction_log":  True,
+        "skip_time_exit":       True,   # Fase 5: non attivo a metà giornata
     },
     "review": {
         "description": "Market Close — solo portfolio review (21:00 UTC)",
@@ -70,6 +72,7 @@ MODE_CONFIG = {
         "skip_devils_advocate": True,
         "skip_risk_manager":    True,
         "skip_prediction_log":  False,
+        "skip_time_exit":       False,  # Fase 5: ATTIVO la sera
     },
 }
 
@@ -164,6 +167,8 @@ def _build_initial_state(tickers: list, run_id: str, mode: str) -> dict:
             "skip_devils_advocate": mode_cfg["skip_devils_advocate"],
             "skip_risk_manager":    mode_cfg["skip_risk_manager"],
             "skip_prediction_log":  mode_cfg["skip_prediction_log"],
+            # --- FASE 5: time-based exit ---
+            "skip_time_exit":       mode_cfg["skip_time_exit"],
         },
     }
 
