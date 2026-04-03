@@ -610,7 +610,17 @@ def _build_llm_prompt(
     risk_report: dict,
     pre_recs: list[dict],
     open_positions: list[dict],
+    da_output: dict | None = None,
 ) -> str:
+    da_output = da_output or {}
+    da_vix     = da_output.get("vix_level", 0.0)
+    da_regime  = da_output.get("vix_regime", "UNKNOWN")
+    da_mult    = da_output.get("size_multiplier", 1.0)
+    da_vetoed  = da_output.get("vetoed_tickers", [])
+    da_block = (
+        f"VIX={da_vix:.1f} ({da_regime}), size_multiplier={da_mult:.2f}"
+        + (f", vetoed={da_vetoed}" if da_vetoed else "")
+    )
     warnings_text  = "\n".join(risk_report.get("warnings", [])) or "None"
     positions_text = _format_positions_for_prompt(open_positions)
     open_pos_map   = {p["ticker"]: p for p in open_positions}
@@ -656,6 +666,9 @@ SIGNAL SUMMARY (per ticker):
 
 CURRENT OPEN POSITIONS:
 {positions_text}
+
+DEVIL'S ADVOCATE:
+{da_block}
 
 RISK WARNINGS:
 {warnings_text}
@@ -708,6 +721,24 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     if open_positions:
         progress.update_status(AGENT_ID, None, f"Trovate {len(open_positions)} posizioni aperte")
 
+    # -- Fase 3: leggi output Devil's Advocate --------------------------------
+    import logging as _logging
+    _pm_log = _logging.getLogger(__name__)
+    da_output: dict      = data.get("devils_advocate_output", {})
+    da_vetoed: list[str] = da_output.get("vetoed_tickers", [])
+    da_multiplier: float = float(da_output.get("size_multiplier", 1.0))
+    da_vix: float        = float(da_output.get("vix_level", 0.0))
+    da_regime: str       = da_output.get("vix_regime", "UNKNOWN")
+    da_veto_reasons: dict = da_output.get("veto_reasons", {})
+
+    if da_vetoed:
+        progress.update_status(AGENT_ID, None,
+            f"Devil's Advocate: {len(da_vetoed)} ticker vetati, multiplier={da_multiplier:.2f}")
+    else:
+        progress.update_status(AGENT_ID, None,
+            f"Devil's Advocate: VIX={da_vix:.1f} ({da_regime}), multiplier={da_multiplier:.2f}")
+    # -- Fine lettura Devil's Advocate ----------------------------------------
+
     # 1. Weighted signal aggregation (includes WC)
     weighted = _weighted_signals(state, tickers)
 
@@ -721,7 +752,37 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     pre_recs: list[dict] = []
     for ticker in tickers:
         agg = weighted.get(ticker, {})
+
+        # -- Fase 3: applica veto ---------------------------------------------
+        if ticker in da_vetoed:
+            veto_reason = da_veto_reasons.get(ticker, "vetoed by Devil's Advocate")
+            _pm_log.warning(
+                "[portfolio_manager] %s: action overridden to HOLD (%s)", ticker, veto_reason
+            )
+            pre_recs.append({
+                "ticker":              ticker,
+                "action":              "HOLD",
+                "sizing_pct":          0.0,
+                "conviction":          0.0,
+                "consensus_ratio":     0.0,
+                "weighted_conviction": agg.get("weighted_conviction", 0.0),
+                "reasoning":           f"HOLD — vetoed by Devil's Advocate: {veto_reason}",
+            })
+            continue
+        # -- Fine veto --------------------------------------------------------
+
         sizing, conviction, action, consensus_ratio = _compute_sizing(ticker, agg, risk_report, state=state)
+
+        # -- Fase 3: applica size_multiplier ----------------------------------
+        if action in ("BUY", "SELL") and da_multiplier < 1.0:
+            sizing_before = sizing
+            sizing = round(sizing * da_multiplier, 1)
+            _pm_log.info(
+                "[portfolio_manager] %s: sizing %.1f%% -> %.1f%% (DA multiplier=%.2f, VIX=%.1f %s)",
+                ticker, sizing_before, sizing, da_multiplier, da_vix, da_regime,
+            )
+        # -- Fine multiplier --------------------------------------------------
+
         pre_recs.append({
             "ticker":              ticker,
             "action":              action,
@@ -741,7 +802,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
 
     # 4. LLM for reasoning
     progress.update_status(AGENT_ID, None, "Generating reasoning via LLM")
-    prompt = _build_llm_prompt(tickers, weighted, risk_report, pre_recs, open_positions)
+    prompt = _build_llm_prompt(tickers, weighted, risk_report, pre_recs, open_positions, da_output=da_output)
 
     try:
         llm_result = call_llm(

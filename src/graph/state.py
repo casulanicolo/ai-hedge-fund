@@ -16,9 +16,9 @@ from typing import Annotated, Any, Literal, Optional, TypedDict
 from pydantic import BaseModel, field_validator
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Pydantic model for agent output (Step 1.1/1.2)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AgentOutput(BaseModel):
     """
@@ -49,9 +49,9 @@ class AgentOutput(BaseModel):
         return max(0.1, min(1.0, v))
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Reducer helpers
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _merge_dicts(a: dict, b: dict) -> dict:
     """Shallow-merge two dicts. b values overwrite a on conflict."""
@@ -65,9 +65,9 @@ def _keep_first(a: Any, b: Any) -> Any:
     return a if a else b
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Sub-type aliases
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 PrefetchedData  = dict[str, dict[str, Any]]
 FeedbackHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -75,9 +75,9 @@ AgentWeights    = dict[tuple[str, str], float]
 AnalystSignals  = dict[str, dict[str, Any]]
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Core state
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict, total=False):
     """
@@ -89,12 +89,13 @@ class AgentState(TypedDict, total=False):
     Layout
     ------
     data:
-        prefetched_data  – filled by DataPrefetchAgent before all analysts
-        analyst_signals  – each analyst writes its own entry here
-        feedback_history – injected at pipeline start from SQLite
-        agent_weights    – injected at pipeline start from SQLite
-        risk_output      – written by RiskManagerAgent
-        portfolio_output – written by PortfolioManagerAgent
+        prefetched_data        – filled by DataPrefetchAgent before all analysts
+        analyst_signals        – each analyst writes its own entry here
+        feedback_history       – injected at pipeline start from SQLite
+        agent_weights          – injected at pipeline start from SQLite
+        risk_output            – written by RiskManagerAgent
+        portfolio_output       – written by PortfolioManagerAgent
+        devils_advocate_output – written by DevilsAdvocateAgent (Fase 3)
 
     metadata:
         run_id, tickers, start_ts
@@ -106,9 +107,9 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[Any], operator.add]
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Factory
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def make_initial_state(
     run_id: str,
@@ -122,15 +123,16 @@ def make_initial_state(
     """Construct a fresh AgentState for a pipeline run."""
     return AgentState(
         data={
-            "prefetched_data":  {},
-            "analyst_signals":  {},
-            "feedback_history": feedback_history or {},
-            "agent_weights":    agent_weights or {},
-            "risk_output":      {},
-            "portfolio_output": [],
+            "prefetched_data":        {},
+            "analyst_signals":        {},
+            "feedback_history":       feedback_history or {},
+            "agent_weights":          agent_weights or {},
+            "risk_output":            {},
+            "portfolio_output":       [],
+            "devils_advocate_output": {},   # Fase 3 – Devil's Advocate
             # Convenience keys read directly by legacy philosophy agents
-            "tickers":   tickers,
-            "end_date":  end_date or date.today().isoformat(),
+            "tickers":    tickers,
+            "end_date":   end_date or date.today().isoformat(),
             "start_date": start_date,
         },
         metadata={
@@ -145,9 +147,9 @@ def make_initial_state(
     )
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Typed accessors
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_prefetched(state: AgentState, ticker: str) -> dict[str, Any]:
     """Return the prefetched payload for *ticker*, or {} if not yet available."""
