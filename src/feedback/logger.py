@@ -11,6 +11,7 @@ Table: predictions
   ticker          TEXT    e.g. "AAPL"
   signal          TEXT    "bullish" | "bearish" | "neutral"
   confidence      REAL    0.0 – 1.0
+  expected_return REAL    estimated % return (-0.10 to +0.10), default 0.0
   reasoning_hash  TEXT    SHA-256 of the reasoning string (first 16 hex chars)
   timestamp       TEXT    ISO-8601 UTC
 """
@@ -24,10 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# ── Path to the SQLite database ──────────────────────────────────────────────
+# ── Path to the SQLite database ───────────────────────────────────────────────
 DB_PATH = Path(__file__).resolve().parents[2] / "db" / "hedge_fund.db"
 
-# ── SQL: create the predictions table if it does not exist ───────────────────
+# ── SQL: create the predictions table if it does not exist ────────────────────
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS predictions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     ticker          TEXT    NOT NULL,
     signal          TEXT    NOT NULL,
     confidence      REAL    NOT NULL DEFAULT 0.0,
+    expected_return REAL    NOT NULL DEFAULT 0.0,
     reasoning_hash  TEXT    NOT NULL DEFAULT '',
     timestamp       TEXT    NOT NULL
 );
@@ -44,24 +46,26 @@ CREATE TABLE IF NOT EXISTS predictions (
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _hash_reasoning(text: str) -> str:
-    """Return the first 16 hex characters of SHA-256(text)."""
     if not text:
         return ""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _now_utc() -> str:
-    """Current time as ISO-8601 UTC string."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def _get_connection() -> sqlite3.Connection:
-    """Open (and return) a connection to the SQLite database."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("PRAGMA journal_mode=WAL;")   # safe for concurrent writes
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute(_CREATE_TABLE_SQL)
-    conn.commit()
+    # Add expected_return column to existing DBs that don't have it yet
+    try:
+        conn.execute("ALTER TABLE predictions ADD COLUMN expected_return REAL NOT NULL DEFAULT 0.0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     return conn
 
 
@@ -70,20 +74,12 @@ def _get_connection() -> sqlite3.Connection:
 def log_predictions(state: dict[str, Any]) -> str:
     """
     Read every analyst signal from state and write them to the SQLite
-    predictions table.  Also logs the portfolio manager's aggregated
+    predictions table. Also logs the portfolio manager's aggregated
     decision for each ticker.
 
-    Parameters
-    ----------
-    state : dict
-        The final AgentState produced by the LangGraph pipeline.
-
-    Returns
-    -------
-    str
-        The run_id used for this batch of inserts (UUID4).
+    Returns the run_id used for this batch of inserts (UUID4).
     """
-    run_id = str(uuid.uuid4())
+    run_id    = str(uuid.uuid4())
     timestamp = _now_utc()
     rows: list[tuple] = []
 
@@ -93,7 +89,6 @@ def log_predictions(state: dict[str, Any]) -> str:
     analyst_signals: dict = data.get("analyst_signals", {})
 
     for agent_id, ticker_signals in analyst_signals.items():
-        # ticker_signals is usually  {ticker: {signal, confidence, reasoning, …}}
         if not isinstance(ticker_signals, dict):
             continue
 
@@ -101,18 +96,25 @@ def log_predictions(state: dict[str, Any]) -> str:
             if not isinstance(payload, dict):
                 continue
 
-            raw_signal = str(payload.get("signal", "neutral")).lower()
-            # Normalise to DB CHECK constraint vocabulary (BUY / SELL / HOLD)
-            signal_map = {
-                "bullish": "BUY", "buy": "BUY",
-                "bearish": "SELL", "sell": "SELL",
-                "neutral": "HOLD", "hold": "HOLD",
-            }
-            signal     = signal_map.get(raw_signal, "HOLD")
+            # Support both old format (signal) and new format (direction)
+            direction = payload.get("direction")
+            if direction:
+                dir_map = {"LONG": "BUY", "SHORT": "SELL", "NEUTRAL": "HOLD"}
+                signal  = dir_map.get(str(direction).upper(), "HOLD")
+            else:
+                raw_signal = str(payload.get("signal", "neutral")).lower()
+                signal_map = {
+                    "bullish": "BUY", "buy": "BUY",
+                    "bearish": "SELL", "sell": "SELL",
+                    "neutral": "HOLD", "hold": "HOLD",
+                }
+                signal = signal_map.get(raw_signal, "HOLD")
+
             raw_conf   = float(payload.get("confidence", 0.0))
-            # Agents may return confidence as 0–100 (percent) or 0.0–1.0
             confidence = raw_conf / 100.0 if raw_conf > 1.0 else raw_conf
-            reasoning  = str(payload.get("reasoning", ""))
+
+            expected_return = float(payload.get("expected_return", 0.0))
+            reasoning       = str(payload.get("reasoning", ""))
 
             rows.append((
                 run_id,
@@ -120,6 +122,7 @@ def log_predictions(state: dict[str, Any]) -> str:
                 ticker,
                 signal,
                 confidence,
+                expected_return,
                 _hash_reasoning(reasoning),
                 timestamp,
             ))
@@ -131,23 +134,24 @@ def log_predictions(state: dict[str, Any]) -> str:
         if not isinstance(decision, dict):
             continue
 
-        # Portfolio manager uses action (BUY/SELL/HOLD) + conviction
         raw_action = str(decision.get("action", "hold")).lower()
-
-        # Normalise action → DB CHECK constraint vocabulary (BUY / SELL / HOLD)
-        action_map = {"buy": "BUY", "sell": "SELL", "hold": "HOLD",
-                      "bullish": "BUY", "bearish": "SELL", "neutral": "HOLD"}
+        action_map = {
+            "buy": "BUY", "sell": "SELL", "hold": "HOLD",
+            "bullish": "BUY", "bearish": "SELL", "neutral": "HOLD",
+        }
         signal = action_map.get(raw_action, "HOLD")
 
-        conviction = float(decision.get("conviction", 0.0))
-        reasoning  = str(decision.get("reasoning", ""))
+        conviction      = float(decision.get("conviction", 0.0))
+        expected_return = float(decision.get("expected_return", 0.0))
+        reasoning       = str(decision.get("reasoning", ""))
 
         rows.append((
             run_id,
-            "portfolio_manager",       # fixed agent_id for the PM
+            "portfolio_manager",
             ticker,
             signal,
             conviction,
+            expected_return,
             _hash_reasoning(reasoning),
             timestamp,
         ))
@@ -162,8 +166,9 @@ def log_predictions(state: dict[str, Any]) -> str:
         conn.executemany(
             """
             INSERT INTO predictions
-                (run_id, agent_id, ticker, signal, confidence, reasoning_hash, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (run_id, agent_id, ticker, signal, confidence, expected_return,
+                 reasoning_hash, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -181,30 +186,21 @@ def log_predictions(state: dict[str, Any]) -> str:
 
 
 def prediction_log_node(state: dict[str, Any]) -> dict[str, Any]:
-    """
-    LangGraph node wrapper around log_predictions().
-
-    Called automatically by the graph after the portfolio manager.
-    Writes all signals to SQLite and returns the state unchanged.
-    """
+    """LangGraph node wrapper around log_predictions()."""
     run_id = log_predictions(state)
-    # Store the run_id back into state so downstream nodes can reference it
     state.setdefault("data", {})["last_run_id"] = run_id
     return state
 
 
 def query_last_run(n: int = 5) -> list[dict]:
-    """
-    Utility: return the last n distinct run_ids with their row counts.
-    Useful for a quick sanity check after a pipeline run.
-    """
+    """Return the last n distinct run_ids with their row counts."""
     conn = _get_connection()
     try:
         cursor = conn.execute(
             """
             SELECT run_id,
-                   COUNT(*)          AS rows,
-                   MIN(timestamp)    AS started_at
+                   COUNT(*)       AS rows,
+                   MIN(timestamp) AS started_at
             FROM   predictions
             GROUP  BY run_id
             ORDER  BY started_at DESC

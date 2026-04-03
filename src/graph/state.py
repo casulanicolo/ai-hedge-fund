@@ -1,7 +1,7 @@
 """
 src/graph/state.py
-───────────────────
-Athanor Alpha — extended LangGraph AgentState.
+──────────────────
+Athanor Alpha – extended LangGraph AgentState.
 
 All top-level keys use Annotated reducers so that parallel analyst nodes
 can write concurrently without triggering InvalidUpdateError.
@@ -11,7 +11,42 @@ from __future__ import annotations
 from datetime import date
 
 import operator
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Any, Literal, Optional, TypedDict
+
+from pydantic import BaseModel, field_validator
+
+
+# ─────────────────────────────────────────────
+# Pydantic model for agent output (Step 1.1/1.2)
+# ─────────────────────────────────────────────
+
+class AgentOutput(BaseModel):
+    """
+    Structured output produced by every analyst agent.
+
+    Fields
+    ------
+    direction       : LONG / SHORT / NEUTRAL
+    expected_return : estimated % return over 3-4 day horizon.
+                      Clamped to [-0.10, +0.10].
+    confidence      : signal quality score. Clamped to [0.1, 1.0].
+    reasoning       : free-text explanation (optional).
+    """
+
+    direction:       Literal["LONG", "SHORT", "NEUTRAL"]
+    expected_return: float = 0.0
+    confidence:      float = 0.5
+    reasoning:       str   = ""
+
+    @field_validator("expected_return")
+    @classmethod
+    def clamp_expected_return(cls, v: float) -> float:
+        return max(-0.10, min(0.10, v))
+
+    @field_validator("confidence")
+    @classmethod
+    def clamp_confidence(cls, v: float) -> float:
+        return max(0.1, min(1.0, v))
 
 
 # ─────────────────────────────────────────────
@@ -26,7 +61,7 @@ def _merge_dicts(a: dict, b: dict) -> dict:
 
 
 def _keep_first(a: Any, b: Any) -> Any:
-    """Keep the first (non-empty) value — used for metadata which only start writes."""
+    """Keep the first (non-empty) value – used for metadata which only start writes."""
     return a if a else b
 
 
@@ -54,12 +89,12 @@ class AgentState(TypedDict, total=False):
     Layout
     ------
     data:
-        prefetched_data  — filled by DataPrefetchAgent before all analysts
-        analyst_signals  — each analyst writes its own entry here
-        feedback_history — injected at pipeline start from SQLite
-        agent_weights    — injected at pipeline start from SQLite
-        risk_output      — written by RiskManagerAgent
-        portfolio_output — written by PortfolioManagerAgent
+        prefetched_data  – filled by DataPrefetchAgent before all analysts
+        analyst_signals  – each analyst writes its own entry here
+        feedback_history – injected at pipeline start from SQLite
+        agent_weights    – injected at pipeline start from SQLite
+        risk_output      – written by RiskManagerAgent
+        portfolio_output – written by PortfolioManagerAgent
 
     metadata:
         run_id, tickers, start_ts

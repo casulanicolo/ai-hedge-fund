@@ -2,7 +2,7 @@
 portfolio_manager.py – Athanor Alpha Phase 3.5
 Reads analyst_signals + risk_report from state.
 Produces per-ticker recommendations:
-  {ticker, action, sizing_pct, conviction, reasoning,
+  {ticker, action, sizing_pct, conviction, weighted_conviction, reasoning,
    entry_price, stop_loss, take_profit, size_usd, rr_ratio, consensus}
 No execution – output only. Writes to state["data"]["portfolio_recommendations"].
 """
@@ -23,20 +23,25 @@ from src.utils.progress import progress
 
 AGENT_ID = "portfolio_manager"
 
-# ── Sizing parameters ────────────────────────────────────────────────────────
-MAX_SINGLE_POSITION = 20.0    # % of portfolio, hard cap per ticker
-MIN_SINGLE_POSITION = 2.0     # % below this → skip (not worth it)
-TOTAL_GROSS_BUDGET = 100.0    # we size to 100% gross, human decides leverage
-KELLY_FRACTION = 0.25         # Quarter-Kelly per sicurezza (f/4)
-CORR_PENALTY_THRESHOLD = 0.70 # Correlazione oltre cui ridurre sizing del 30%
-CORR_PENALTY_FACTOR = 0.70    # Sizing ridotto a 70% se correlazione alta
+# ── Sizing parameters ─────────────────────────────────────────────────────────
+MAX_SINGLE_POSITION   = 20.0
+MIN_SINGLE_POSITION   = 2.0
+TOTAL_GROSS_BUDGET    = 100.0
+KELLY_FRACTION        = 0.25
+CORR_PENALTY_THRESHOLD = 0.70
+CORR_PENALTY_FACTOR   = 0.70
 
-# ── Dollar-risk parameters (read from .env, with sensible defaults) ──────────
+# ── Signal quality thresholds ─────────────────────────────────────────────────
+NET_SCORE_THRESHOLD     = 0.25
+MIN_CONSENSUS_RATIO     = 0.65
+MIN_CONVICTION_TO_TRADE = 0.30
+WC_THRESHOLD            = 0.008   # Weighted Conviction minima per entrare (0.8%)
+
+# ── Dollar-risk parameters ────────────────────────────────────────────────────
 PORTFOLIO_SIZE_USD = float(os.getenv("PORTFOLIO_SIZE_USD", "10000"))
-RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.01"))   # 1% per trade
-MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "5"))          # max open positions
+RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.005"))
+MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "3"))
 
-# Agents excluded from signal aggregation (they don't emit trading signals)
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
 
 
@@ -45,23 +50,77 @@ NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TickerRecommendation(BaseModel):
-    ticker: str = Field(description="Equity ticker symbol")
-    action: str = Field(description="BUY | SELL | HOLD")
+    ticker:     str   = Field(description="Equity ticker symbol")
+    action:     str   = Field(description="BUY | SELL | HOLD")
     sizing_pct: float = Field(description="Recommended portfolio weight in percent (0-100)")
     conviction: float = Field(description="Conviction score 0.0-1.0")
-    reasoning: str = Field(description="One-sentence rationale")
+    reasoning:  str   = Field(description="One-sentence rationale")
 
 
 class PortfolioOutput(BaseModel):
-    recommendations: list[TickerRecommendation] = Field(
-        description="One recommendation per ticker"
-    )
-    portfolio_summary: str = Field(
-        description="2-3 sentence summary of the overall portfolio stance"
-    )
-    risk_notes: str = Field(
-        description="Any risk warnings the human should be aware of"
-    )
+    recommendations:   list[TickerRecommendation] = Field(description="One recommendation per ticker")
+    portfolio_summary: str = Field(description="2-3 sentence summary of the overall portfolio stance")
+    risk_notes:        str = Field(description="Any risk warnings the human should be aware of")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weighted Conviction (Step 1.5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def compute_weighted_conviction(signals: list[dict]) -> float:
+    """
+    WC = sum(expected_return_i * confidence_i) / n_non_neutral
+
+    signals: list of dicts with keys 'direction', 'expected_return', 'confidence'.
+    Returns WC as a float. Positive = net bullish, negative = net bearish.
+    If no non-neutral agents, returns 0.0.
+    """
+    non_neutral = [s for s in signals if s.get("direction", "NEUTRAL") != "NEUTRAL"]
+    if not non_neutral:
+        return 0.0
+
+    wc = sum(
+        s.get("expected_return", 0.0) * s.get("confidence", 0.0)
+        for s in non_neutral
+    ) / len(non_neutral)
+
+    return round(wc, 6)
+
+
+def _collect_signals_for_ticker(state: AgentState, ticker: str) -> list[dict]:
+    """
+    Collect all agent signals for a given ticker that have the new
+    direction/expected_return/confidence format.
+    """
+    analyst_signals = state.get("data", {}).get("analyst_signals", {})
+    signals = []
+
+    for agent_id, agent_data in analyst_signals.items():
+        if agent_id in NON_SIGNAL_AGENTS:
+            continue
+        if not isinstance(agent_data, dict):
+            continue
+
+        if ticker in agent_data:
+            sig = agent_data[ticker]
+        elif agent_data.get("ticker") == ticker:
+            sig = agent_data
+        else:
+            continue
+
+        if not isinstance(sig, dict):
+            continue
+
+        # Only include signals with the new format
+        if "direction" in sig and "expected_return" in sig and "confidence" in sig:
+            signals.append({
+                "agent_id":       agent_id,
+                "direction":      sig.get("direction", "NEUTRAL"),
+                "expected_return": float(sig.get("expected_return", 0.0)),
+                "confidence":     float(sig.get("confidence", 0.5)),
+            })
+
+    return signals
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -69,10 +128,6 @@ class PortfolioOutput(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_open_positions() -> list[dict]:
-    """
-    Carica le posizioni aperte da SQLite tramite portfolio manager.
-    Ritorna lista vuota se la tabella non esiste ancora.
-    """
     try:
         from src.portfolio.manager import get_open_positions
         return get_open_positions()
@@ -81,9 +136,6 @@ def _load_open_positions() -> list[dict]:
 
 
 def _format_positions_for_prompt(positions: list[dict]) -> str:
-    """
-    Formatta le posizioni aperte in testo leggibile per il prompt LLM.
-    """
     if not positions:
         return "Nessuna posizione aperta. Portafoglio in cash."
 
@@ -111,17 +163,17 @@ def _format_positions_for_prompt(positions: list[dict]) -> str:
 def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
     """
     For each ticker compute a weighted net score across all agents.
-    Uses agent_weights from state if available, otherwise uniform weights.
-    Signals with signal='skip' are ignored (not counted in weight or score).
-    Returns {ticker: {net_score, avg_confidence, bull_agents, bear_agents, net_signal}}
+    Also computes Weighted Conviction (WC) using the new AgentOutput format.
+    Returns {ticker: {net_score, avg_confidence, bull_agents, bear_agents,
+                       net_signal, weighted_conviction}}
     """
     analyst_signals: dict[str, Any] = state.get("data", {}).get("analyst_signals", {})
-    agent_weights: dict[str, Any] = state.get("data", {}).get("agent_weights", {})
+    agent_weights:   dict[str, Any] = state.get("data", {}).get("agent_weights", {})
 
     result: dict[str, dict] = {}
 
     for ticker in tickers:
-        net_score = 0.0
+        net_score    = 0.0
         total_weight = 0.0
         bull_agents: list[str] = []
         bear_agents: list[str] = []
@@ -134,7 +186,6 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
             if not isinstance(agent_data, dict):
                 continue
 
-            # Resolve signal data for this ticker
             if ticker in agent_data:
                 sig_data = agent_data[ticker]
             elif agent_data.get("ticker") == ticker:
@@ -145,15 +196,23 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
             if not isinstance(sig_data, dict):
                 continue
 
-            signal = str(sig_data.get("signal", "neutral")).lower()
+            # Support both old format (signal) and new format (direction)
+            direction = sig_data.get("direction")
+            signal_raw = sig_data.get("signal", "neutral")
 
-            # skip signals are excluded from aggregation entirely
+            if direction:
+                signal = "bullish" if direction == "LONG" else ("bearish" if direction == "SHORT" else "neutral")
+            else:
+                signal = str(signal_raw).lower()
+
             if signal == "skip":
                 continue
 
             confidence = float(sig_data.get("confidence", 0.5))
+            if confidence > 1.0:
+                confidence /= 100.0
+            confidence = max(0.0, min(1.0, confidence))
 
-            # Agent weight: from feedback loop DB if available, else 1.0
             weight = 1.0
             if agent_weights:
                 w_entry = agent_weights.get(agent_id, {})
@@ -162,7 +221,6 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
                 elif isinstance(w_entry, (int, float)):
                     weight = float(w_entry)
 
-            # Score: bullish = +1, bearish = -1, neutral = 0; scaled by confidence × weight
             if signal == "bullish":
                 score = +1.0 * confidence * weight
                 bull_agents.append(agent_id)
@@ -172,82 +230,96 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
             else:
                 score = 0.0
 
-            net_score += score
+            net_score    += score
             total_weight += weight
-            conf_sum += confidence
-            n += 1
+            conf_sum     += confidence
+            n            += 1
+
+        # Compute Weighted Conviction using new AgentOutput format
+        ticker_signals = _collect_signals_for_ticker(state, ticker)
+        wc = compute_weighted_conviction(ticker_signals)
 
         if n == 0:
             result[ticker] = {
                 "net_score": 0.0, "avg_confidence": 0.0,
                 "bull_agents": [], "bear_agents": [],
                 "net_signal": "neutral", "n_agents": 0,
+                "weighted_conviction": wc,
             }
             continue
 
         norm_score = net_score / total_weight if total_weight > 0 else 0.0
-        avg_conf = conf_sum / n
+        avg_conf   = conf_sum / n
 
-        if norm_score > 0.1:
+        if norm_score > NET_SCORE_THRESHOLD:
             net_signal = "bullish"
-        elif norm_score < -0.1:
+        elif norm_score < -NET_SCORE_THRESHOLD:
             net_signal = "bearish"
         else:
             net_signal = "neutral"
 
         result[ticker] = {
-            "net_score": round(norm_score, 4),
-            "avg_confidence": round(avg_conf, 3),
-            "bull_agents": bull_agents,
-            "bear_agents": bear_agents,
-            "net_signal": net_signal,
-            "n_agents": n,
+            "net_score":           round(norm_score, 4),
+            "avg_confidence":      round(avg_conf, 3),
+            "bull_agents":         bull_agents,
+            "bear_agents":         bear_agents,
+            "net_signal":          net_signal,
+            "n_agents":            n,
+            "weighted_conviction": wc,
         }
 
     return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Sizing logic (no LLM needed here – pure math)
+# Sizing logic
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _kelly_sizing(edge: float, rr_ratio: float) -> float:
-    """
-    Fractional Kelly Criterion.
-    edge = probabilità stimata di successo (consensus_score 0-1)
-    rr_ratio = reward/risk ratio (es. 2.0 = TP è 2× lo SL)
-    Returns sizing % di portafoglio (Quarter-Kelly applicato).
-    """
     if rr_ratio <= 0 or edge <= 0:
         return 0.0
     kelly_f = (edge * rr_ratio - (1.0 - edge)) / rr_ratio
     kelly_f = max(0.0, kelly_f)
-    sizing_fraction = kelly_f * KELLY_FRACTION
-    return round(sizing_fraction * 100.0, 1)
+    return round(kelly_f * KELLY_FRACTION * 100.0, 1)
 
 
 def _compute_sizing(
     ticker: str,
     agg: dict,
     risk_report: dict,
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str, float]:
     """
-    Returns (sizing_pct, conviction_score, action).
-    Usa Fractional Kelly Criterion + penalità VaR + regime VIX.
-    sizing_pct è BEFORE normalisation across portfolio.
+    Returns (sizing_pct, conviction_score, action, consensus_ratio).
+    Now also applies WC_THRESHOLD filter.
     """
-    net_score = agg.get("net_score", 0.0)
-    avg_conf = agg.get("avg_confidence", 0.5)
+    net_score  = agg.get("net_score", 0.0)
+    avg_conf   = agg.get("avg_confidence", 0.5)
     net_signal = agg.get("net_signal", "neutral")
+    n_agents   = agg.get("n_agents", 0)
+    wc         = agg.get("weighted_conviction", 0.0)
 
     conviction = min(1.0, abs(net_score) * avg_conf * 2.0)
 
     if net_signal == "bullish":
         action = "BUY"
+        direction_agents = agg.get("bull_agents", [])
     elif net_signal == "bearish":
         action = "SELL"
+        direction_agents = agg.get("bear_agents", [])
     else:
-        return 0.0, round(conviction, 3), "HOLD"
+        return 0.0, round(conviction, 3), "HOLD", 0.0
+
+    consensus_ratio = len(direction_agents) / n_agents if n_agents > 0 else 0.0
+
+    if consensus_ratio < MIN_CONSENSUS_RATIO:
+        return 0.0, round(conviction, 3), "HOLD", consensus_ratio
+
+    if conviction < MIN_CONVICTION_TO_TRADE:
+        return 0.0, round(conviction, 3), "HOLD", consensus_ratio
+
+    # WC filter: if absolute WC is below threshold, skip the trade
+    if abs(wc) < WC_THRESHOLD:
+        return 0.0, round(conviction, 3), "HOLD", consensus_ratio
 
     trade_levels = risk_report.get("trade_levels", {}).get(ticker, {})
     rr_ratio = float(trade_levels.get("rr_ratio", 2.0))
@@ -275,28 +347,18 @@ def _compute_sizing(
         sizing = min(sizing, 10.0)
 
     sizing = round(min(sizing, MAX_SINGLE_POSITION), 1)
-    conviction = round(conviction, 3)
-
-    return sizing, conviction, action
+    return sizing, round(conviction, 3), action, consensus_ratio
 
 
-def _apply_correlation_penalty(
-    recommendations: list[dict],
-    risk_report: dict,
-) -> list[dict]:
-    """
-    Riduce il sizing dei ticker altamente correlati per evitare concentrazione.
-    """
+def _apply_correlation_penalty(recommendations: list[dict], risk_report: dict) -> list[dict]:
     corr_matrix = risk_report.get("correlation_matrix", {})
     if not corr_matrix:
         return recommendations
 
     buys = sorted(
         [r for r in recommendations if r["action"] == "BUY"],
-        key=lambda r: r["conviction"],
-        reverse=True,
+        key=lambda r: r["conviction"], reverse=True,
     )
-
     penalized: set[str] = set()
 
     for i, r1 in enumerate(buys):
@@ -312,13 +374,10 @@ def _apply_correlation_penalty(
 
 
 def _normalise_sizing(recommendations: list[dict], risk_report: dict | None = None) -> list[dict]:
-    """
-    Scale sizing_pct so that BUY positions sum to at most TOTAL_GROSS_BUDGET.
-    """
     if risk_report:
         recommendations = _apply_correlation_penalty(recommendations, risk_report)
 
-    buys = [r for r in recommendations if r["action"] == "BUY" and r["sizing_pct"] >= MIN_SINGLE_POSITION]
+    buys   = [r for r in recommendations if r["action"] == "BUY" and r["sizing_pct"] >= MIN_SINGLE_POSITION]
     others = [r for r in recommendations if r not in buys]
 
     total = sum(r["sizing_pct"] for r in buys)
@@ -328,7 +387,6 @@ def _normalise_sizing(recommendations: list[dict], risk_report: dict | None = No
             r["sizing_pct"] = round(r["sizing_pct"] * scale, 1)
 
     buys = [r for r in buys if r["sizing_pct"] >= MIN_SINGLE_POSITION]
-
     return buys + others
 
 
@@ -337,14 +395,10 @@ def _normalise_sizing(recommendations: list[dict], risk_report: dict | None = No
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _select_top_trades(pre_recs: list[dict]) -> list[dict]:
-    """
-    Keep at most MAX_ACTIVE_TRADES active positions (BUY + SELL combined).
-    """
-    active = [r for r in pre_recs if r["action"] in ("BUY", "SELL")]
-    hold   = [r for r in pre_recs if r["action"] == "HOLD"]
-
-    active.sort(key=lambda r: r["conviction"], reverse=True)
-    top    = active[:MAX_ACTIVE_TRADES]
+    active  = [r for r in pre_recs if r["action"] in ("BUY", "SELL")]
+    hold    = [r for r in pre_recs if r["action"] == "HOLD"]
+    active.sort(key=lambda r: r["conviction"] * r.get("consensus_ratio", 0.5), reverse=True)
+    top     = active[:MAX_ACTIVE_TRADES]
     demoted = active[MAX_ACTIVE_TRADES:]
 
     for r in demoted:
@@ -359,11 +413,7 @@ def _enrich_with_trade_levels(
     risk_report: dict,
     weighted: dict[str, dict],
 ) -> list[dict]:
-    """
-    For each BUY/SELL recommendation, attach operational trade levels from
-    risk_report["trade_levels"] and compute dollar position size.
-    """
-    trade_levels: dict[str, dict] = risk_report.get("trade_levels", {})
+    trade_levels:    dict[str, dict] = risk_report.get("trade_levels", {})
     max_position_usd = PORTFOLIO_SIZE_USD * MAX_SINGLE_POSITION / 100.0
 
     for rec in pre_recs:
@@ -371,6 +421,9 @@ def _enrich_with_trade_levels(
         action = rec["action"]
         agg    = weighted.get(ticker, {})
         n      = agg.get("n_agents", 0)
+        wc     = agg.get("weighted_conviction", 0.0)
+
+        rec["weighted_conviction"] = wc
 
         if action == "BUY":
             votes = agg.get("bull_agents", [])
@@ -414,7 +467,7 @@ def _enrich_with_trade_levels(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LLM reasoning per ticker – include posizioni aperte nel prompt
+# LLM prompt
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_llm_prompt(
@@ -424,10 +477,9 @@ def _build_llm_prompt(
     pre_recs: list[dict],
     open_positions: list[dict],
 ) -> str:
-    warnings_text = "\n".join(risk_report.get("warnings", [])) or "None"
+    warnings_text  = "\n".join(risk_report.get("warnings", [])) or "None"
     positions_text = _format_positions_for_prompt(open_positions)
-
-    open_pos_map = {p["ticker"]: p for p in open_positions}
+    open_pos_map   = {p["ticker"]: p for p in open_positions}
 
     ticker_block = ""
     for t in tickers:
@@ -437,6 +489,8 @@ def _build_llm_prompt(
         sl    = pre.get("stop_loss")
         tp    = pre.get("take_profit")
         sz    = pre.get("size_usd")
+        wc    = pre.get("weighted_conviction", agg.get("weighted_conviction", 0.0))
+
         levels_str = (
             f"entry={entry}, SL={sl}, TP={tp}, size=${sz:.0f}"
             if entry is not None else "no trade levels"
@@ -453,6 +507,7 @@ def _build_llm_prompt(
         ticker_block += (
             f"\n{t}: net_score={agg.get('net_score', 0):.3f}, "
             f"avg_confidence={agg.get('avg_confidence', 0):.2f}, "
+            f"WC={wc:+.4f}, "
             f"consensus={pre.get('consensus','—')}, "
             f"action={pre.get('action','?')}, sizing={pre.get('sizing_pct', 0)}%, "
             f"conviction={pre.get('conviction', 0):.2f}, "
@@ -476,9 +531,10 @@ Historical Max Drawdown estimate: {risk_report.get('max_drawdown_estimate', 0)*1
 
 YOUR TASK:
 For each ticker, write a one-sentence reasoning that explains the recommended action and sizing.
+Include the Weighted Conviction (WC) value in the reasoning (e.g. "WC=+0.017").
 If a position is already open for that ticker, explicitly address whether to MAINTAIN, ADD TO,
-REDUCE, or CLOSE the position based on the current signal – do not ignore existing positions.
-Then write a 2-3 sentence portfolio summary and a brief risk note for the human trader.
+REDUCE, or CLOSE the position based on the current signal.
+Then write a 2-3 sentence portfolio summary and a brief risk note.
 
 Respond ONLY with valid JSON matching this schema:
 {{
@@ -495,8 +551,7 @@ Respond ONLY with valid JSON matching this schema:
   "risk_notes": "..."
 }}
 
-Use exactly the action and sizing_pct values provided above – do not change the numbers.
-Write the reasoning and summaries only. Be specific and complete – do not truncate.
+Use exactly the action and sizing_pct values provided above — do not change the numbers.
 """
 
 
@@ -505,50 +560,52 @@ Write the reasoning and summaries only. Be specific and complete – do not trun
 # ══════════════════════════════════════════════════════════════════════════════
 
 def portfolio_manager_agent(state: AgentState) -> dict:
-    """
-    LangGraph node – Portfolio Manager.
-    Reads analyst_signals + risk_report from state.
-    Writes portfolio_recommendations to state["data"]["portfolio_recommendations"].
-    """
-    data: dict[str, Any] = state.get("data", {})
-    tickers: list[str] = data.get("tickers", [])
-    risk_report: dict = data.get("risk_report", {})
+    """LangGraph node – Portfolio Manager."""
+    data:        dict[str, Any] = state.get("data", {})
+    tickers:     list[str]      = data.get("tickers", [])
+    risk_report: dict           = data.get("risk_report", {})
 
     if not tickers:
         tickers = list(data.get("prefetched_data", {}).keys())
 
     progress.update_status(AGENT_ID, None, "Aggregating weighted signals")
 
-    # ── 0. Carica posizioni aperte da SQLite ──────────────────────────────
     open_positions = _load_open_positions()
     if open_positions:
         progress.update_status(AGENT_ID, None, f"Trovate {len(open_positions)} posizioni aperte")
 
-    # ── 1. Weighted signal aggregation ────────────────────────────────────
+    # 1. Weighted signal aggregation (includes WC)
     weighted = _weighted_signals(state, tickers)
 
-    # ── 2. Pre-compute sizing (no LLM) ────────────────────────────────────
+    # Log WC per ticker
+    for ticker, agg in weighted.items():
+        wc = agg.get("weighted_conviction", 0.0)
+        progress.update_status(AGENT_ID, ticker, f"WC={wc:+.4f}")
+
+    # 2. Pre-compute sizing
     progress.update_status(AGENT_ID, None, "Computing position sizing")
     pre_recs: list[dict] = []
     for ticker in tickers:
         agg = weighted.get(ticker, {})
-        sizing, conviction, action = _compute_sizing(ticker, agg, risk_report)
+        sizing, conviction, action, consensus_ratio = _compute_sizing(ticker, agg, risk_report)
         pre_recs.append({
-            "ticker": ticker,
-            "action": action,
-            "sizing_pct": sizing,
-            "conviction": conviction,
-            "reasoning": "",
+            "ticker":              ticker,
+            "action":              action,
+            "sizing_pct":          sizing,
+            "conviction":          conviction,
+            "consensus_ratio":     consensus_ratio,
+            "weighted_conviction": agg.get("weighted_conviction", 0.0),
+            "reasoning":           "",
         })
 
     pre_recs = _normalise_sizing(pre_recs, risk_report)
 
-    # ── 3. Select top trades and enrich with operational levels ───────────
+    # 3. Select top trades and enrich
     progress.update_status(AGENT_ID, None, "Selecting top trades and enriching with ATR levels")
     pre_recs = _select_top_trades(pre_recs)
     pre_recs = _enrich_with_trade_levels(pre_recs, risk_report, weighted)
 
-    # ── 4. LLM for reasoning text ─────────────────────────────────────────
+    # 4. LLM for reasoning
     progress.update_status(AGENT_ID, None, "Generating reasoning via LLM")
     prompt = _build_llm_prompt(tickers, weighted, risk_report, pre_recs, open_positions)
 
@@ -567,42 +624,43 @@ def portfolio_manager_agent(state: AgentState) -> dict:
                 if llm_rec:
                     rec["reasoning"] = llm_rec.reasoning
             portfolio_summary = llm_result.portfolio_summary
-            risk_notes = llm_result.risk_notes
+            risk_notes        = llm_result.risk_notes
         else:
-            portfolio_summary = "LLM output parsing failed – see raw signals."
-            risk_notes = "; ".join(risk_report.get("warnings", []))
+            portfolio_summary = "LLM output parsing failed — see raw signals."
+            risk_notes        = "; ".join(risk_report.get("warnings", []))
 
     except Exception as e:
         portfolio_summary = f"LLM call failed: {e}"
-        risk_notes = "; ".join(risk_report.get("warnings", []))
+        risk_notes        = "; ".join(risk_report.get("warnings", []))
         for rec in pre_recs:
             if not rec["reasoning"]:
                 agg = weighted.get(rec["ticker"], {})
+                wc  = agg.get("weighted_conviction", 0.0)
                 rec["reasoning"] = (
                     f"Net score {agg.get('net_score', 0):.3f} from "
-                    f"{agg.get('n_agents', 0)} agents; "
+                    f"{agg.get('n_agents', 0)} agents; WC={wc:+.4f}; "
                     f"action {rec['action']} at {rec['sizing_pct']}%."
                 )
 
-    # ── 5. Salva posizioni aperte nell'output per il report ───────────────
+    # 5. Build output
     portfolio_recommendations = {
-        "recommendations": pre_recs,
+        "recommendations":  pre_recs,
         "portfolio_summary": portfolio_summary,
-        "risk_notes": risk_notes,
-        "open_positions": open_positions,
+        "risk_notes":        risk_notes,
+        "open_positions":    open_positions,
         "total_long_pct": round(
             sum(r["sizing_pct"] for r in pre_recs if r["action"] == "BUY"), 1
         ),
-        "n_long": sum(1 for r in pre_recs if r["action"] == "BUY"),
+        "n_long":  sum(1 for r in pre_recs if r["action"] == "BUY"),
         "n_short": sum(1 for r in pre_recs if r["action"] == "SELL"),
-        "n_hold": sum(1 for r in pre_recs if r["action"] == "HOLD"),
+        "n_hold":  sum(1 for r in pre_recs if r["action"] == "HOLD"),
     }
 
     data["portfolio_recommendations"] = portfolio_recommendations
     data["analyst_signals"][AGENT_ID] = {
-        "signal": "neutral",
+        "signal":     "neutral",
         "confidence": 1.0,
-        "reasoning": portfolio_summary,
+        "reasoning":  portfolio_summary,
     }
 
     show_agent_reasoning(portfolio_recommendations, AGENT_ID)
@@ -616,9 +674,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     )
     progress.update_status(AGENT_ID, None, "Done")
 
-    message = HumanMessage(content=summary, name=AGENT_ID)
-
     return {
-        "messages": [message],
+        "messages": [HumanMessage(content=summary, name=AGENT_ID)],
         "data": data,
     }

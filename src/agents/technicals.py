@@ -1,39 +1,20 @@
 """
 src/agents/technicals.py
-Technical Analyst Agent — Fase 3.1
+Technical Analyst Agent – Fase 3.1
 Legge da prefetched_data (nessuna API diretta), calcola indicatori avanzati,
 rileva il regime di mercato e produce un segnale strutturato via LLM.
 """
 
 import json
-from typing_extensions import Literal
-from pydantic import BaseModel, Field
-
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.graph.state import AgentState, show_agent_reasoning
+from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 from src.data.state_reader import get_ohlcv_daily, get_ohlcv_5m
 from src.indicators.technical_indicators import compute_indicator_snapshot
 from src.indicators.regime_detector import detect_regime
-
-
-# ---------------------------------------------------------------------------
-# Pydantic model per l'output strutturato dell'LLM
-# ---------------------------------------------------------------------------
-
-class TechnicalSignal(BaseModel):
-    signal: Literal["bullish", "bearish", "neutral"] = Field(
-        description="Trading signal based on technical analysis"
-    )
-    confidence: float = Field(
-        description="Confidence level between 0 and 100"
-    )
-    reasoning: str = Field(
-        description="Concise explanation of the signal, max 3 sentences"
-    )
 
 
 ##### Technical Analyst Agent #####
@@ -47,7 +28,7 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     3. Analisi multi-timeframe (daily + intraday 5m se disponibile)
     4. Rileva il regime: TRENDING / RANGING / VOLATILE
     5. Passa snapshot + regime all'LLM per generare il segnale finale
-    6. Output strutturato: {signal, confidence, indicators, regime}
+    6. Output strutturato: {direction, expected_return, confidence, reasoning}
     """
     data = state["data"]
     tickers = data["tickers"]
@@ -73,12 +54,13 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
         if not snapshot:
             progress.update_status(agent_id, ticker, "Failed: insufficient price data")
             technical_analysis[ticker] = {
-                "signal": "neutral",
-                "confidence": 0,
-                "indicators": {},
-                "regime": "UNKNOWN",
+                "direction":       "NEUTRAL",
+                "expected_return": 0.0,
+                "confidence":      0.1,
+                "indicators":      {},
+                "regime":          "UNKNOWN",
                 "regime_direction": "FLAT",
-                "reasoning": "Insufficient price data for technical analysis.",
+                "reasoning":       "Insufficient price data for technical analysis.",
             }
             continue
 
@@ -95,8 +77,9 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
 
         # --- 5. Assembla output ---
         technical_analysis[ticker] = {
-            "signal":           signal_result.signal,
-            "confidence":       round(signal_result.confidence),
+            "direction":        signal_result.direction,
+            "expected_return":  signal_result.expected_return,
+            "confidence":       signal_result.confidence,
             "regime":           regime_info["regime"],
             "regime_direction": regime_info["direction"],
             "indicators":       _build_indicators_summary(snapshot),
@@ -150,7 +133,7 @@ def _generate_signal_via_llm(
     snapshot: dict,
     regime_info: dict,
     agent_id: str,
-) -> TechnicalSignal:
+) -> AgentOutput:
 
     regime    = regime_info["regime"]
     direction = regime_info["direction"]
@@ -206,7 +189,7 @@ def _generate_signal_via_llm(
             "human",
             f"""Analyze the following technical indicators for {ticker} and produce a trading signal.
 
-MARKET REGIME: {regime} ({direction}) — confidence {reg_conf}%
+MARKET REGIME: {regime} ({direction}) – confidence {reg_conf}%
 Regime reasons: {reg_reasons}
 Regime instruction: {regime_instruction}
 
@@ -226,21 +209,26 @@ TECHNICAL INDICATORS (daily):
 - Hurst exponent:      {hurst:.2f}
 {intraday_line}
 
-Respond with signal (bullish/bearish/neutral), confidence (0-100), and reasoning (max 3 sentences).
+Respond with:
+- direction: LONG, SHORT, or NEUTRAL
+- expected_return: your realistic return estimate for a 3-4 day swing trade (e.g. 0.025 = +2.5%). Must reflect a realistic target, not a theoretical maximum. Range: -0.10 to +0.10.
+- confidence: your signal quality score from 0.1 to 1.0
+- reasoning: max 3 sentences explaining the signal
 """
         ),
     ])
 
     def default_factory():
-        return TechnicalSignal(
-            signal="neutral",
-            confidence=40.0,
+        return AgentOutput(
+            direction="NEUTRAL",
+            expected_return=0.0,
+            confidence=0.1,
             reasoning=f"LLM unavailable. Rule-based fallback: regime {regime}, RSI {rsi_14:.1f}.",
         )
 
     return call_llm(
         prompt=prompt,
-        pydantic_model=TechnicalSignal,
+        pydantic_model=AgentOutput,
         agent_name=agent_id,
         state=state,
         default_factory=default_factory,

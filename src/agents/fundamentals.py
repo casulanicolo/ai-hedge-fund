@@ -5,30 +5,14 @@ from typing import Any
 
 import pandas as pd
 import yfinance as yf
-from pydantic import BaseModel, Field
-from typing_extensions import Literal
 from langchain_core.messages import HumanMessage
 
-from src.graph.state import AgentState, show_agent_reasoning
+from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 
 
-# ── Pydantic output schema ──────────────────────────────────────────────────
-
-class FundamentalSignal(BaseModel):
-    signal: Literal["bullish", "bearish", "neutral"] = Field(
-        description="Trading signal based on fundamental analysis"
-    )
-    confidence: float = Field(
-        description="Confidence level between 0 and 100"
-    )
-    reasoning: str = Field(
-        description="Concise explanation of the signal, max 3 sentences"
-    )
-
-
-# ── Data loader ─────────────────────────────────────────────────────────────
+# ── Data loader ──────────────────────────────────────────────────────────────
 
 def _load_ticker_data(state: AgentState, ticker: str) -> dict:
     """
@@ -43,14 +27,14 @@ def _load_ticker_data(state: AgentState, ticker: str) -> dict:
     # Fallback: fetch directly
     t = yf.Ticker(ticker)
     return {
-        "income_stmt_q":  t.quarterly_income_stmt,
+        "income_stmt_q":   t.quarterly_income_stmt,
         "balance_sheet_q": t.quarterly_balance_sheet,
-        "cash_flow_q":    t.quarterly_cashflow,
-        "info":           t.info or {},
+        "cash_flow_q":     t.quarterly_cashflow,
+        "info":            t.info or {},
     }
 
 
-# ── Scoring helpers ─────────────────────────────────────────────────────────
+# ── Scoring helpers ───────────────────────────────────────────────────────────
 
 def score_revenue_growth(incq: pd.DataFrame) -> tuple[float, dict]:
     """Score 0-100 based on QoQ and YoY revenue growth."""
@@ -64,9 +48,9 @@ def score_revenue_growth(incq: pd.DataFrame) -> tuple[float, dict]:
         qoq = (q0 - q1) / abs(q1) if q1 else None
         yoy = (q0 - q4) / abs(q4) if q4 else None
 
-        raw["revenue_q0_B"]     = round(q0 / 1e9, 2)
-        raw["revenue_qoq_pct"]  = round(qoq * 100, 2) if qoq is not None else None
-        raw["revenue_yoy_pct"]  = round(yoy * 100, 2) if yoy is not None else None
+        raw["revenue_q0_B"]    = round(q0 / 1e9, 2)
+        raw["revenue_qoq_pct"] = round(qoq * 100, 2) if qoq is not None else None
+        raw["revenue_yoy_pct"] = round(yoy * 100, 2) if yoy is not None else None
 
         score = 50.0
         if qoq is not None:
@@ -191,7 +175,7 @@ def score_insider_activity(info: dict) -> tuple[float, dict]:
     return round(score, 1), raw
 
 
-# ── Main agent ───────────────────────────────────────────────────────────────
+# ── Main agent ────────────────────────────────────────────────────────────────
 
 def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_analyst_agent"):
     """
@@ -200,8 +184,8 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
     1. Legge dati finanziari da prefetched_data o yfinance (fallback)
     2. Calcola 5 score (0-100): revenue growth, op margin, FCF yield, D/E, insider
     3. Passa score + raw data all'LLM per segnale finale
-    4. Output strutturato: {signal, confidence, reasoning, scores}
-    Crypto assets (ticker ending in -USD) are skipped: signal='skip', confidence=0.
+    4. Output strutturato: {direction, expected_return, confidence, reasoning, scores}
+    Crypto assets (ticker ending in -USD) are skipped.
     """
     data    = state["data"]
     tickers = data["tickers"]
@@ -211,13 +195,14 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Loading financial data")
 
-        # ── Crypto: no fundamental data available ──────────────────────────
+        # ── Crypto: no fundamental data available ────────────────────────────
         if ticker.endswith("-USD"):
             fundamental_analysis[ticker] = {
-                "signal": "skip",
-                "confidence": 0,
-                "reasoning": "No fundamental data available for crypto assets.",
-                "scores": {},
+                "direction":       "NEUTRAL",
+                "expected_return": 0.0,
+                "confidence":      0.1,
+                "reasoning":       "No fundamental data available for crypto assets.",
+                "scores":          {},
             }
             progress.update_status(agent_id, ticker, "Skipped (crypto)")
             continue
@@ -230,7 +215,7 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
             info       = payload.get("info", {})
             market_cap = info.get("marketCap")
 
-            # ── Compute scores ────────────────────────────────────────────
+            # ── Compute scores ───────────────────────────────────────────────
             progress.update_status(agent_id, ticker, "Computing fundamental scores")
 
             s_rev, r_rev = score_revenue_growth(incq)       if incq is not None and not incq.empty else (50.0, {"error": "no data"})
@@ -258,10 +243,10 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
                 "insider_activity": r_ins,
             }
 
-            # ── LLM call ──────────────────────────────────────────────────
+            # ── LLM call ─────────────────────────────────────────────────────
             progress.update_status(agent_id, ticker, "Generating signal via LLM")
 
-            prompt = f"""You are a fundamental analyst evaluating {ticker}.
+            prompt = f"""You are a fundamental analyst evaluating {ticker} for a 3-4 day swing trade.
 
 QUANTITATIVE SCORES (0=worst, 100=best):
 - Revenue Growth (QoQ + YoY): {s_rev}/100
@@ -274,32 +259,32 @@ QUANTITATIVE SCORES (0=worst, 100=best):
 RAW DATA:
 {raw_data}
 
-Rules:
-- signal = "bullish" if composite > 65
-- signal = "bearish" if composite < 35
-- signal = "neutral" otherwise
-- confidence = integer 0-100 reflecting your certainty
-- reasoning = 2-3 sentences explaining the key fundamental drivers
+Respond with:
+- direction: LONG if composite > 65, SHORT if composite < 35, NEUTRAL otherwise
+- expected_return: your realistic return estimate for a 3-4 day swing trade based on fundamental strength (e.g. 0.02 = +2%). Must reflect a realistic target, not a theoretical maximum. Range: -0.10 to +0.10.
+- confidence: your signal quality score from 0.1 to 1.0
+- reasoning: 2-3 sentences explaining the key fundamental drivers
 
 Respond in JSON format.
 """
 
-            result: FundamentalSignal = call_llm(
+            result: AgentOutput = call_llm(
                 prompt=prompt,
-                pydantic_model=FundamentalSignal,
+                pydantic_model=AgentOutput,
                 agent_name=agent_id,
                 state=state,
             )
 
             fundamental_analysis[ticker] = {
-                "signal":     result.signal,
-                "confidence": result.confidence,
-                "reasoning":  result.reasoning,
-                "scores":     scores,
+                "direction":       result.direction,
+                "expected_return": result.expected_return,
+                "confidence":      result.confidence,
+                "reasoning":       result.reasoning,
+                "scores":          scores,
             }
 
             show_agent_reasoning(
-                {"scores": scores, "signal": result.signal, "confidence": result.confidence},
+                {"scores": scores, "direction": result.direction, "confidence": result.confidence},
                 "Fundamental Analyst",
             )
 
@@ -308,11 +293,14 @@ Respond in JSON format.
         except Exception as e:
             progress.update_status(agent_id, ticker, f"Error: {e}")
             fundamental_analysis[ticker] = {
-                "signal": "neutral", "confidence": 0,
-                "reasoning": f"Error during analysis: {e}", "scores": {}
+                "direction":       "NEUTRAL",
+                "expected_return": 0.0,
+                "confidence":      0.1,
+                "reasoning":       f"Error during analysis: {e}",
+                "scores":          {},
             }
 
-    # ── Write to state ───────────────────────────────────────────────────────
+    # ── Write to state ────────────────────────────────────────────────────────
     msg = HumanMessage(content=str(fundamental_analysis), name=agent_id)
 
     if state.get("metadata", {}).get("show_reasoning"):
