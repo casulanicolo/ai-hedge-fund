@@ -3,9 +3,11 @@ Athanor Alpha — Pipeline principale.
 Esegue: prefetch → agenti → risk → portfolio → log predictions → email report.
 
 Uso:
-    python -m src.run_pipeline                      # tutti i ticker da config/tickers.yaml
-    python -m src.run_pipeline AAPL MSFT NVDA       # dry run su 3 ticker
-    python -m src.run_pipeline AAPL MSFT --no-email # senza email
+    python -m src.run_pipeline                           # tutti i ticker, mode=full
+    python -m src.run_pipeline AAPL MSFT NVDA            # dry run su 3 ticker
+    python -m src.run_pipeline --mode light              # solo technicals + sentiment
+    python -m src.run_pipeline --mode review             # solo portfolio review
+    python -m src.run_pipeline AAPL MSFT --no-email      # senza email
 """
 
 import argparse
@@ -36,6 +38,43 @@ ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "db" / "hedge_fund.db"
 TICKERS_CONFIG = ROOT / "config" / "tickers.yaml"
 
+# ---------------------------------------------------------------------------
+# Configurazione modalità
+# ---------------------------------------------------------------------------
+# Definisce quali nodi analyst sono attivi per ciascun mode.
+# Il grafo leggerà state["metadata"]["run_mode"] e salterà i nodi assenti.
+MODE_CONFIG = {
+    "full": {
+        "description": "Pre-Market — tutti gli agenti (13:00 UTC)",
+        "analyst_nodes": [
+            "warren_buffett", "ben_graham", "charlie_munger",
+            "michael_burry", "bill_ackman", "cathie_wood",
+            "technicals", "fundamentals", "sentiment", "breakout_momentum",
+        ],
+        "skip_devils_advocate": False,
+        "skip_risk_manager":    False,
+        "skip_prediction_log":  False,
+    },
+    "light": {
+        "description": "Mid-Day — technicals + sentiment (17:00 UTC)",
+        "analyst_nodes": [
+            "technicals", "sentiment", "breakout_momentum",
+        ],
+        "skip_devils_advocate": False,
+        "skip_risk_manager":    True,
+        "skip_prediction_log":  True,
+    },
+    "review": {
+        "description": "Market Close — solo portfolio review (21:00 UTC)",
+        "analyst_nodes": [],
+        "skip_devils_advocate": True,
+        "skip_risk_manager":    True,
+        "skip_prediction_log":  False,
+    },
+}
+
+VALID_MODES = list(MODE_CONFIG.keys())
+
 
 # ---------------------------------------------------------------------------
 # Helpers DB
@@ -46,10 +85,10 @@ def _get_conn():
     return conn
 
 
-def _record_run_start(conn, run_id, tickers):
+def _record_run_start(conn, run_id, tickers, mode):
     conn.execute(
         "INSERT INTO pipeline_runs (run_id, started_at, status, tickers) VALUES (?,?,?,?)",
-        (run_id, datetime.now(timezone.utc).isoformat(), "running", json.dumps(tickers)),
+        (run_id, datetime.now(timezone.utc).isoformat(), f"running:{mode}", json.dumps(tickers)),
     )
     conn.commit()
 
@@ -94,8 +133,9 @@ def _load_agent_model_map() -> dict:
         log.warning(f"agent_router non disponibile, uso fallback globale: {e}")
         return {}
 
-def _build_initial_state(tickers: list, run_id: str) -> dict:
+def _build_initial_state(tickers: list, run_id: str, mode: str) -> dict:
     end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    mode_cfg = MODE_CONFIG[mode]
 
     return {
         "messages": [],
@@ -118,6 +158,12 @@ def _build_initial_state(tickers: list, run_id: str) -> dict:
             "model_provider": "Anthropic",
             "run_id": run_id,
             "start_time": datetime.now(timezone.utc).isoformat(),
+            # --- FASE 4: campi per la modalità ---
+            "run_mode": mode,
+            "active_analyst_nodes": mode_cfg["analyst_nodes"],
+            "skip_devils_advocate": mode_cfg["skip_devils_advocate"],
+            "skip_risk_manager":    mode_cfg["skip_risk_manager"],
+            "skip_prediction_log":  mode_cfg["skip_prediction_log"],
         },
     }
 
@@ -125,12 +171,13 @@ def _build_initial_state(tickers: list, run_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # Costruisce digest per send_digest(subject, body_text, body_html)
 # ---------------------------------------------------------------------------
-def _build_digest(final_state, tickers, run_id):
+def _build_digest(final_state, tickers, run_id, mode):
     signals = final_state.get("data", {}).get("analyst_signals", {})
     portfolio_output = final_state.get("data", {}).get("portfolio_recommendations", {})
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    mode_label = MODE_CONFIG[mode]["description"]
 
-    subject = f"Athanor Alpha — Daily Report {now_str}"
+    subject = f"Athanor Alpha — {mode.upper()} Report {now_str}"
 
     # Aggrega voti per ticker
     ticker_votes = {t: {"BUY": 0, "SELL": 0, "HOLD": 0, "agents": []} for t in tickers}
@@ -153,9 +200,10 @@ def _build_digest(final_state, tickers, run_id):
     # Posizioni aperte (dal portfolio manager output)
     open_positions = portfolio_output.get("open_positions", [])
 
-    # Plain text — SENZA troncamenti
+    # Plain text
     lines = [
-        "ATHANOR ALPHA — DAILY REPORT",
+        "ATHANOR ALPHA — REPORT",
+        f"Modalità: {mode_label}",
         f"Run    : {run_id}",
         f"Data   : {now_str}",
         f"Ticker : {', '.join(tickers)}",
@@ -179,17 +227,18 @@ def _build_digest(final_state, tickers, run_id):
     else:
         lines.append("  Nessuna posizione aperta — portafoglio in cash.")
 
-    lines += [
-        "",
-        "=" * 60,
-        "SEGNALI AGENTI",
-        "=" * 60,
-    ]
-    for ticker in tickers:
-        v = ticker_votes[ticker]
-        lines.append(f"\n{ticker}:  BUY={v['BUY']}  SELL={v['SELL']}  HOLD={v['HOLD']}")
-        for a in v["agents"]:
-            lines.append(a)
+    if mode != "review":
+        lines += [
+            "",
+            "=" * 60,
+            "SEGNALI AGENTI",
+            "=" * 60,
+        ]
+        for ticker in tickers:
+            v = ticker_votes[ticker]
+            lines.append(f"\n{ticker}:  BUY={v['BUY']}  SELL={v['SELL']}  HOLD={v['HOLD']}")
+            for a in v["agents"]:
+                lines.append(a)
 
     lines += ["", "=" * 60, "RACCOMANDAZIONI PORTFOLIO MANAGER", "=" * 60]
     recs = []
@@ -198,9 +247,9 @@ def _build_digest(final_state, tickers, run_id):
         summary = portfolio_output.get("portfolio_summary", "")
         risk_notes = portfolio_output.get("risk_notes", "")
         if summary:
-            lines.append(f"\nSintesi:\n{summary}")       # nessun taglio
+            lines.append(f"\nSintesi:\n{summary}")
         if risk_notes:
-            lines.append(f"\nRisk notes:\n{risk_notes}") # nessun taglio
+            lines.append(f"\nRisk notes:\n{risk_notes}")
         lines.append("")
 
     if recs:
@@ -214,7 +263,7 @@ def _build_digest(final_state, tickers, run_id):
             tp     = rec.get("take_profit")
             size   = rec.get("size_usd")
             rr     = rec.get("rr_ratio")
-            reason = str(rec.get("reasoning", ""))        # nessun taglio
+            reason = str(rec.get("reasoning", ""))
 
             lines.append(f"\n{'─'*50}")
             lines.append(f"{t}: {action} | size={sizing}% | conviction={conv:.2f} | consensus={rec.get('consensus','?')}")
@@ -226,8 +275,7 @@ def _build_digest(final_state, tickers, run_id):
 
     body_text = "\n".join(lines)
 
-    # ── HTML ──────────────────────────────────────────────────────────
-    # Tabella voti per ticker
+    # ── HTML ──────────────────────────────────────────────────────────────
     html_rows = ""
     for ticker in tickers:
         v = ticker_votes[ticker]
@@ -238,7 +286,6 @@ def _build_digest(final_state, tickers, run_id):
             f"<td style='color:gray'>HOLD {v['HOLD']}</td></tr>"
         )
 
-    # Sezione posizioni aperte HTML
     if open_positions:
         pos_rows = ""
         for p in open_positions:
@@ -266,7 +313,15 @@ def _build_digest(final_state, tickers, run_id):
     else:
         positions_html = "<h3>📂 Posizioni Aperte</h3><p style='color:#888'>Nessuna posizione aperta — portafoglio in cash.</p>"
 
-    # Sezione raccomandazioni HTML — senza troncamenti
+    agents_section_html = ""
+    if mode != "review":
+        agents_section_html = f"""
+    <h3>📈 Voti Agenti per Ticker</h3>
+    <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
+      <tr style="background:#f0f0f0"><th>Ticker</th><th>BUY</th><th>SELL</th><th>HOLD</th></tr>
+      {html_rows}
+    </table>"""
+
     recs_html = ""
     if recs:
         for rec in recs:
@@ -296,24 +351,23 @@ def _build_digest(final_state, tickers, run_id):
   <p style="font-size:13px;margin:8px 0 0;color:#444">{rec.get('reasoning','')}</p>
 </div>"""
 
-    summary_html   = portfolio_output.get("portfolio_summary", "")
-    risk_html      = portfolio_output.get("risk_notes", "")
+    summary_html = portfolio_output.get("portfolio_summary", "") if isinstance(portfolio_output, dict) else ""
+    risk_html    = portfolio_output.get("risk_notes", "")         if isinstance(portfolio_output, dict) else ""
+
+    mode_badge_color = {"full": "#2c3e50", "light": "#2980b9", "review": "#8e44ad"}.get(mode, "#2c3e50")
 
     body_html = f"""<html><body style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;background:#f4f4f4;padding:20px">
 <div style="max-width:700px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
-  <div style="background:#2c3e50;color:#fff;padding:20px 28px">
-    <h2 style="margin:0">📊 Athanor Alpha — Daily Report</h2>
+  <div style="background:{mode_badge_color};color:#fff;padding:20px 28px">
+    <h2 style="margin:0">📊 Athanor Alpha — {mode.upper()} Report</h2>
+    <p style="margin:4px 0 0;opacity:.8">{mode_label}</p>
     <p style="margin:4px 0 0;opacity:.8">Run: <code>{run_id}</code> &nbsp;|&nbsp; {now_str}</p>
   </div>
   <div style="padding:24px 28px">
 
     {positions_html}
 
-    <h3>📈 Voti Agenti per Ticker</h3>
-    <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
-      <tr style="background:#f0f0f0"><th>Ticker</th><th>BUY</th><th>SELL</th><th>HOLD</th></tr>
-      {html_rows}
-    </table>
+    {agents_section_html}
 
     <h3>💼 Raccomandazioni Portfolio Manager</h3>
     {f'<p style="background:#f8f9fa;padding:10px;border-radius:4px">{summary_html}</p>' if summary_html else ''}
@@ -333,16 +387,18 @@ def _build_digest(final_state, tickers, run_id):
 # ---------------------------------------------------------------------------
 # Pipeline principale
 # ---------------------------------------------------------------------------
-def run_pipeline(tickers, send_email=True):
+def run_pipeline(tickers, send_email=True, mode="full"):
     run_id = str(uuid.uuid4())
+    mode_label = MODE_CONFIG[mode]["description"]
     log.info("=" * 60)
     log.info(f"ATHANOR ALPHA — RUN {run_id[:8]}")
+    log.info(f"Modalità: {mode.upper()} — {mode_label}")
     log.info(f"Ticker : {tickers}")
     log.info(f"Email  : {'SI' if send_email else 'NO'}")
     log.info("=" * 60)
 
     conn = _get_conn()
-    _record_run_start(conn, run_id, tickers)
+    _record_run_start(conn, run_id, tickers, mode)
 
     try:
         log.info("[1/4] Import moduli...")
@@ -351,28 +407,29 @@ def run_pipeline(tickers, send_email=True):
         log.info("[1/4] OK.")
 
         log.info("[2/4] Costruzione AgentState...")
-        initial_state = _build_initial_state(tickers, run_id)
-        log.info(f"[2/4] end_date={initial_state['data']['end_date']}  show_reasoning=False")
+        initial_state = _build_initial_state(tickers, run_id, mode)
+        log.info(f"[2/4] end_date={initial_state['data']['end_date']}  mode={mode}")
 
         log.info("[3/4] Esecuzione grafo (2-5 minuti, attendere)...")
-        log.info("      prefetch → agenti paralleli → risk → portfolio → log")
+        log.info(f"      Nodi analyst attivi: {MODE_CONFIG[mode]['analyst_nodes'] or '(nessuno — solo review)'}")
         final_state = compiled_graph.invoke(initial_state)
 
         signals = final_state.get("data", {}).get("analyst_signals", {})
         log.info(f"[3/4] Grafo completato. Agenti con segnali: {len(signals)}")
 
-        log.info("[4/4] Aggiornamento pesi agenti...")
-        try:
-            weights = adjust_weights()
-            log.info(f"[4/4] Pesi aggiornati per {len(weights)} agenti.")
-        except Exception as e:
-            log.warning(f"[4/4] adjust_weights warning: {e}")
+        if mode == "full":
+            log.info("[4/4] Aggiornamento pesi agenti...")
+            try:
+                weights = adjust_weights()
+                log.info(f"[4/4] Pesi aggiornati per {len(weights)} agenti.")
+            except Exception as e:
+                log.warning(f"[4/4] adjust_weights warning: {e}")
 
         if send_email:
             log.info("[4/4] Invio email digest...")
             try:
                 from src.alerts.email_sender import send_digest
-                subject, body_text, body_html = _build_digest(final_state, tickers, run_id)
+                subject, body_text, body_html = _build_digest(final_state, tickers, run_id, mode)
                 ok = send_digest(subject=subject, body_text=body_text, body_html=body_html)
                 if ok:
                     log.info("[4/4] Email inviata.")
@@ -383,7 +440,7 @@ def run_pipeline(tickers, send_email=True):
         else:
             log.info("[4/4] Email saltata.")
 
-        _record_run_end(conn, run_id, "completed")
+        _record_run_end(conn, run_id, f"completed:{mode}")
         log.info("=" * 60)
         log.info(f"RUN COMPLETATO CON SUCCESSO — run_id={run_id[:8]}")
         log.info("=" * 60)
@@ -404,6 +461,12 @@ def main():
     parser = argparse.ArgumentParser(description="Athanor Alpha — Pipeline principale")
     parser.add_argument("tickers", nargs="*", help="Ticker opzionali (default: da config/tickers.yaml)")
     parser.add_argument("--no-email", action="store_true", help="Disabilita invio email")
+    parser.add_argument(
+        "--mode",
+        choices=VALID_MODES,
+        default="full",
+        help="Modalità di esecuzione: full (default), light, review",
+    )
     args = parser.parse_args()
 
     tickers = load_tickers(args.tickers if args.tickers else None)
@@ -411,7 +474,7 @@ def main():
         log.error("Nessun ticker trovato.")
         sys.exit(1)
 
-    success = run_pipeline(tickers, send_email=not args.no_email)
+    success = run_pipeline(tickers, send_email=not args.no_email, mode=args.mode)
     sys.exit(0 if success else 1)
 
 
