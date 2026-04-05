@@ -1,4 +1,5 @@
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
+from src.utils.trade_levels import compute_trade_levels
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 import json
@@ -112,11 +113,13 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
             agent_id=agent_id,
         )
 
+        levels = compute_trade_levels(buffett_output.direction, state, ticker)
         buffett_analysis[ticker] = {
             "direction":       buffett_output.direction,
             "expected_return": buffett_output.expected_return,
             "confidence":      buffett_output.confidence,
             "reasoning":       buffett_output.reasoning,
+            **levels,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=buffett_output.reasoning)

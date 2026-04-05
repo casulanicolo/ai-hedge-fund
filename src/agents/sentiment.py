@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.llm import call_llm
 from src.utils.progress import progress
+from src.utils.trade_levels import compute_trade_levels
 
 # ────────────────────────────────────────────────
 # Constants
@@ -299,6 +300,7 @@ def sentiment_agent(state: AgentState) -> dict[str, Any]:
 
         if not all_items:
             progress.update_status(AGENT_ID, ticker, "no news found → neutral")
+            _neutral_levels = compute_trade_levels("NEUTRAL", state, ticker)
             analyst_signals[AGENT_ID][ticker] = {
                 "direction":       "NEUTRAL",
                 "expected_return": 0.0,
@@ -307,6 +309,7 @@ def sentiment_agent(state: AgentState) -> dict[str, Any]:
                 "event_type":      "other",
                 "urgency":         "low",
                 "reasoning":       "No recent news or filings found. Defaulting to neutral.",
+                **_neutral_levels,
             }
             continue
 
@@ -383,6 +386,7 @@ Return ONLY a valid JSON object matching this schema – no extra text:
                 direction = "NEUTRAL"
                 expected_return = 0.0
 
+            _levels = compute_trade_levels(direction, state, ticker)
             analyst_signals[AGENT_ID][ticker] = {
                 "direction":       direction,
                 "expected_return": expected_return,
@@ -391,8 +395,10 @@ Return ONLY a valid JSON object matching this schema – no extra text:
                 "event_type":      dominant_event,
                 "urgency":         dominant_urgency,
                 "reasoning":       "LLM call failed. Using keyword heuristic fallback.",
+                **_levels,
             }
         else:
+            _levels = compute_trade_levels(result.direction, state, ticker)
             analyst_signals[AGENT_ID][ticker] = {
                 "direction":       result.direction,
                 "expected_return": result.expected_return,
@@ -401,6 +407,7 @@ Return ONLY a valid JSON object matching this schema – no extra text:
                 "event_type":      result.event_type,
                 "urgency":         result.urgency,
                 "reasoning":       result.reasoning,
+                **_levels,
             }
 
         sig = analyst_signals[AGENT_ID][ticker]

@@ -60,12 +60,18 @@ def _get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute(_CREATE_TABLE_SQL)
-    # Add expected_return column to existing DBs that don't have it yet
-    try:
-        conn.execute("ALTER TABLE predictions ADD COLUMN expected_return REAL NOT NULL DEFAULT 0.0")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    # Add columns to existing DBs that don't have them yet (idempotent)
+    for migration in (
+        "ALTER TABLE predictions ADD COLUMN expected_return REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE predictions ADD COLUMN entry_price  REAL",
+        "ALTER TABLE predictions ADD COLUMN stop_loss    REAL",
+        "ALTER TABLE predictions ADD COLUMN take_profit  REAL",
+    ):
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     return conn
 
 
@@ -115,6 +121,9 @@ def log_predictions(state: dict[str, Any]) -> str:
 
             expected_return = float(payload.get("expected_return", 0.0))
             reasoning       = str(payload.get("reasoning", ""))
+            entry_price     = payload.get("entry_price")
+            stop_loss       = payload.get("stop_loss")
+            take_profit     = payload.get("take_profit")
 
             rows.append((
                 run_id,
@@ -125,6 +134,9 @@ def log_predictions(state: dict[str, Any]) -> str:
                 expected_return,
                 _hash_reasoning(reasoning),
                 timestamp,
+                entry_price,
+                stop_loss,
+                take_profit,
             ))
 
     # ── 2. Portfolio Manager aggregated decisions ─────────────────────────────
@@ -154,6 +166,9 @@ def log_predictions(state: dict[str, Any]) -> str:
             expected_return,
             _hash_reasoning(reasoning),
             timestamp,
+            None,   # entry_price: il portfolio manager non ha livelli diretti
+            None,   # stop_loss
+            None,   # take_profit
         ))
 
     # ── 3. Write to SQLite ────────────────────────────────────────────────────
@@ -167,8 +182,8 @@ def log_predictions(state: dict[str, Any]) -> str:
             """
             INSERT INTO predictions
                 (run_id, agent_id, ticker, signal, confidence, expected_return,
-                 reasoning_hash, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 reasoning_hash, timestamp, entry_price, stop_loss, take_profit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

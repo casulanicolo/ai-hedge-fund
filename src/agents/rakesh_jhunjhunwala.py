@@ -1,4 +1,5 @@
 ﻿from src.graph.state import AgentState, show_agent_reasoning
+from src.utils.trade_levels import compute_trade_levels
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -142,7 +143,8 @@ def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhu
             agent_id=agent_id,
         )
 
-        jhunjhunwala_analysis[ticker] = jhunjhunwala_output.model_dump()
+        levels = compute_trade_levels(jhunjhunwala_output.direction, state, ticker)
+        jhunjhunwala_analysis[ticker] = {**jhunjhunwala_output.model_dump(), **levels}
 
         progress.update_status(agent_id, ticker, "Done", analysis=jhunjhunwala_output.reasoning)
 

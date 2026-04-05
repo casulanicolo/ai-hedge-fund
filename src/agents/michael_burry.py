@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import json
+from src.utils.trade_levels import compute_trade_levels
 
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from langchain_core.messages import HumanMessage
@@ -93,11 +94,13 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
             agent_id=agent_id,
         )
 
+        levels = compute_trade_levels(burry_output.direction, state, ticker)
         burry_analysis[ticker] = {
             "direction":       burry_output.direction,
             "expected_return": burry_output.expected_return,
             "confidence":      burry_output.confidence,
             "reasoning":       burry_output.reasoning,
+            **levels,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=burry_output.reasoning)

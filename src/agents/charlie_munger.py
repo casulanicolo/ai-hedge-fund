@@ -1,5 +1,6 @@
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
+from src.utils.trade_levels import compute_trade_levels
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 import json
@@ -89,11 +90,13 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
             confidence_hint=compute_confidence(analysis_data[ticker], signal),
         )
 
+        levels = compute_trade_levels(munger_output.direction, state, ticker)
         munger_analysis[ticker] = {
             "direction":       munger_output.direction,
             "expected_return": munger_output.expected_return,
             "confidence":      munger_output.confidence,
             "reasoning":       munger_output.reasoning,
+            **levels,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=munger_output.reasoning)

@@ -31,6 +31,9 @@ from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 from src.data.state_reader import get_ohlcv_daily, get_ohlcv_weekly, get_ohlcv_4h
+from src.utils.trade_levels import compute_trade_levels
+
+_BREAKOUT_DIR_MAP = {"bullish": "LONG", "bearish": "SHORT", "neutral": "NEUTRAL"}
 
 
 AGENT_ID = "breakout_momentum"
@@ -266,6 +269,7 @@ def breakout_momentum_agent(state: AgentState) -> dict:
                 "signal": "neutral",
                 "confidence": 0,
                 "reasoning": "Dati OHLCV insufficienti per l'analisi breakout.",
+                **compute_trade_levels("NEUTRAL", state, ticker),
             }
             continue
 
@@ -297,6 +301,7 @@ def breakout_momentum_agent(state: AgentState) -> dict:
                 "signal": "neutral",
                 "confidence": 10,
                 "reasoning": f"Nessun breakout rilevato. Volume surge: {vol_surge:.1f}x, ATR exp: {atr_exp:.2f}x.",
+                **compute_trade_levels("NEUTRAL", state, ticker),
             }
             progress.update_status(AGENT_ID, ticker, "No breakout — neutral (fast path)")
             continue
@@ -366,12 +371,14 @@ Return JSON with signal, confidence (0-100), and reasoning."""
             )
 
             if isinstance(result, BreakoutSignal):
+                _levels = compute_trade_levels(_BREAKOUT_DIR_MAP.get(result.signal, "NEUTRAL"), state, ticker)
                 signals[ticker] = {
                     "signal": result.signal,
                     "confidence": result.confidence,
                     "reasoning": result.reasoning,
                     "metrics": metrics,
                     "composite_score": composite_score,
+                    **_levels,
                 }
             else:
                 raise ValueError("LLM did not return BreakoutSignal")
@@ -388,6 +395,7 @@ Return JSON with signal, confidence (0-100), and reasoning."""
                 signal = "neutral"
                 confidence = 20
 
+            _levels = compute_trade_levels(_BREAKOUT_DIR_MAP.get(signal, "NEUTRAL"), state, ticker)
             signals[ticker] = {
                 "signal": signal,
                 "confidence": confidence,
@@ -398,6 +406,7 @@ Return JSON with signal, confidence (0-100), and reasoning."""
                 ),
                 "metrics": metrics,
                 "composite_score": composite_score,
+                **_levels,
             }
 
         progress.update_status(AGENT_ID, ticker, f"Done — {signals[ticker]['signal']}")

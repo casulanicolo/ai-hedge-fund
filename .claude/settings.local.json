@@ -8,7 +8,13 @@
       "Bash(find src:*)",
       "Bash(wc -l /c/Users/tomma/Documents/athanor-alpha/src/backtesting/*.py)",
       "Bash(grep -l \"def.*_agent\" /c/Users/tomma/Documents/athanor-alpha/src/agents/*.py)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(poetry run python -c \":*)",
+      "Bash(python -m poetry run python -c \":*)",
+      "Bash(cmd /c \"where poetry\")",
+      "Bash(cmd /c \"py -m poetry run python --version\")",
+      "Bash(find /c/Users/tomma -name *.venv -type d)",
+      "Bash(.venv/Scripts/python -c \":*)"
     ]
   }
 }

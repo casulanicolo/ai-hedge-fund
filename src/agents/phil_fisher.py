@@ -1,5 +1,6 @@
 ﻿from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api_shim import get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
+from src.utils.trade_levels import compute_trade_levels
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -137,10 +138,13 @@ def phil_fisher_agent(state: AgentState, agent_id: str = "phil_fisher_agent"):
             agent_id=agent_id,
         )
 
+        _dir_map = {"bullish": "LONG", "bearish": "SHORT", "neutral": "NEUTRAL"}
+        levels = compute_trade_levels(_dir_map.get(fisher_output.signal, "NEUTRAL"), state, ticker)
         fisher_analysis[ticker] = {
             "signal": fisher_output.signal,
             "confidence": fisher_output.confidence,
             "reasoning": fisher_output.reasoning,
+            **levels,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=fisher_output.reasoning)

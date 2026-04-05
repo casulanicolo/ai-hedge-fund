@@ -176,7 +176,10 @@ def load_pending_predictions(conn: sqlite3.Connection) -> list[dict]:
             p.signal      AS signal,
             p.confidence  AS confidence,
             p.timestamp   AS timestamp,
-            p.agent_id    AS agent_id
+            p.agent_id    AS agent_id,
+            p.entry_price AS entry_price,
+            p.stop_loss   AS stop_loss,
+            p.take_profit AS take_profit
         FROM predictions p
         WHERE (
             SELECT COUNT(*)
@@ -194,6 +197,9 @@ def load_pending_predictions(conn: sqlite3.Connection) -> list[dict]:
             "confidence":    r[3],
             "timestamp":     r[4],
             "agent_id":      r[5],
+            "entry_price":   r[6],
+            "stop_loss":     r[7],
+            "take_profit":   r[8],
         }
         for r in rows
     ]
@@ -343,10 +349,17 @@ def run_outcome_tracker() -> None:
 
             log.info(f"  Elaboro prediction_id={pred_id} | {agent_id} | {ticker} | {signal} | {pred_dt.date()}")
 
-            price_base = get_price_at_date(ticker, pred_dt)
-            if price_base is None:
-                log.info(f"    Prezzo base non ancora disponibile per {ticker} @ {pred_dt.date()} — skip")
-                continue
+            # Usa entry_price salvato dal DB (catturato al run time) se disponibile,
+            # altrimenti recupera retroattivamente da yfinance come fallback.
+            saved_entry = pred.get("entry_price")
+            if saved_entry is not None:
+                price_base = float(saved_entry)
+                log.debug(f"    Prezzo base da DB: {price_base:.4f}")
+            else:
+                price_base = get_price_at_date(ticker, pred_dt)
+                if price_base is None:
+                    log.info(f"    Prezzo base non ancora disponibile per {ticker} @ {pred_dt.date()} — skip")
+                    continue
 
             done_windows = already_computed_windows(conn, pred_id)
             written_this = 0

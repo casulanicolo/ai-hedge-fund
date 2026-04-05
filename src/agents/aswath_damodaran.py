@@ -3,6 +3,7 @@
 import json
 from typing_extensions import Literal
 from pydantic import BaseModel
+from src.utils.trade_levels import compute_trade_levels
 
 from src.graph.state import AgentState, show_agent_reasoning
 from langchain_core.prompts import ChatPromptTemplate
@@ -117,7 +118,8 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
             agent_id=agent_id,
         )
 
-        damodaran_signals[ticker] = damodaran_output.model_dump()
+        levels = compute_trade_levels(damodaran_output.direction, state, ticker)
+        damodaran_signals[ticker] = {**damodaran_output.model_dump(), **levels}
 
         progress.update_status(agent_id, ticker, "Done", analysis=damodaran_output.reasoning)
 

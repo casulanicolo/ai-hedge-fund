@@ -15,6 +15,7 @@ from src.utils.llm import call_llm
 from src.data.state_reader import get_ohlcv_daily, get_ohlcv_5m
 from src.indicators.technical_indicators import compute_indicator_snapshot
 from src.indicators.regime_detector import detect_regime
+from src.utils.trade_levels import compute_trade_levels
 
 
 ##### Technical Analyst Agent #####
@@ -76,6 +77,7 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
         signal_result = _generate_signal_via_llm(state, ticker, snapshot, regime_info, agent_id)
 
         # --- 5. Assembla output ---
+        levels = compute_trade_levels(signal_result.direction, state, ticker)
         technical_analysis[ticker] = {
             "direction":        signal_result.direction,
             "expected_return":  signal_result.expected_return,
@@ -84,6 +86,7 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
             "regime_direction": regime_info["direction"],
             "indicators":       _build_indicators_summary(snapshot),
             "reasoning":        signal_result.reasoning,
+            **levels,
         }
 
         progress.update_status(

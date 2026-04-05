@@ -1,5 +1,6 @@
 ﻿from datetime import datetime
 from src.graph.state import AgentState, show_agent_reasoning
+from src.utils.trade_levels import compute_trade_levels
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news, get_prices, register_state
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
@@ -135,10 +136,13 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
             agent_id=agent_id,
         )
 
+        _dir_map = {"bullish": "LONG", "bearish": "SHORT", "neutral": "NEUTRAL"}
+        levels = compute_trade_levels(_dir_map.get(druck_output.signal, "NEUTRAL"), state, ticker)
         druck_analysis[ticker] = {
             "signal": druck_output.signal,
             "confidence": druck_output.confidence,
             "reasoning": druck_output.reasoning,
+            **levels,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=druck_output.reasoning)

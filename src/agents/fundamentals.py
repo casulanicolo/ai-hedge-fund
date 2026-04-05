@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.utils.llm import call_llm
 from src.utils.progress import progress
+from src.utils.trade_levels import compute_trade_levels
 
 
 # ── Data loader ──────────────────────────────────────────────────────────────
@@ -275,12 +276,14 @@ Respond in JSON format.
                 state=state,
             )
 
+            levels = compute_trade_levels(result.direction, state, ticker)
             fundamental_analysis[ticker] = {
                 "direction":       result.direction,
                 "expected_return": result.expected_return,
                 "confidence":      result.confidence,
                 "reasoning":       result.reasoning,
                 "scores":          scores,
+                **levels,
             }
 
             show_agent_reasoning(

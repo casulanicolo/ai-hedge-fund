@@ -1,5 +1,6 @@
 ﻿from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, register_state
+from src.utils.trade_levels import compute_trade_levels
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -106,10 +107,13 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
             agent_id=agent_id,
         )
 
+        _dir_map = {"bullish": "LONG", "bearish": "SHORT", "neutral": "NEUTRAL"}
+        levels = compute_trade_levels(_dir_map.get(pabrai_output.signal, "NEUTRAL"), state, ticker)
         pabrai_analysis[ticker] = {
             "signal": pabrai_output.signal,
             "confidence": pabrai_output.confidence,
             "reasoning": pabrai_output.reasoning,
+            **levels,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=pabrai_output.reasoning)

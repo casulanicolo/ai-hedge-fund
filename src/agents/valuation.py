@@ -10,6 +10,7 @@ import json
 import statistics
 from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, show_agent_reasoning
+from src.utils.trade_levels import compute_trade_levels
 from src.utils.progress import progress
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, register_state
 
@@ -195,10 +196,13 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
                 "fcf_periods_analyzed": len(fcf_history)
             }
 
+        _dir_map = {"bullish": "LONG", "bearish": "SHORT", "neutral": "NEUTRAL"}
+        levels = compute_trade_levels(_dir_map.get(signal, "NEUTRAL"), state, ticker)
         valuation_analysis[ticker] = {
             "signal": signal,
             "confidence": confidence,
             "reasoning": reasoning,
+            **levels,
         }
         progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(reasoning, indent=4))
 

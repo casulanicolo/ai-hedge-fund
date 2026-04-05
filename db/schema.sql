@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     confidence      REAL    NOT NULL            -- 0.0 – 1.0
                     CHECK(confidence BETWEEN 0.0 AND 1.0),
     reasoning_hash  TEXT,                       -- SHA-256 of reasoning text (for dedup)
-    timestamp       TEXT    NOT NULL            -- ISO-8601 UTC, e.g. "2025-03-01T14:05:00Z"
+    timestamp       TEXT    NOT NULL,           -- ISO-8601 UTC, e.g. "2025-03-01T14:05:00Z"
+    entry_price     REAL,                       -- prezzo di chiusura al momento della previsione
+    stop_loss       REAL,                       -- livello SL calcolato dall'agente (ATR-based)
+    take_profit     REAL                        -- livello TP calcolato dall'agente (ATR-based)
 );
 
 CREATE INDEX IF NOT EXISTS idx_predictions_run    ON predictions(run_id);
