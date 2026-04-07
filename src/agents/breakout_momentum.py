@@ -364,7 +364,7 @@ Return JSON with signal, confidence (0-100), and reasoning."""
                     "roc_5d": metrics["roc_5d"],
                     "roc_10d": metrics["roc_10d"],
                     "composite_score": composite_score,
-                }).to_string(),
+                }).to_messages(),
                 pydantic_model=BreakoutSignal,
                 agent_name=AGENT_ID,
                 state=state,

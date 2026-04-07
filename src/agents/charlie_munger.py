@@ -544,7 +544,7 @@ def generate_munger_output(
         "ticker":     ticker,
         "facts":      json.dumps(facts_bundle, separators=(",", ":"), ensure_ascii=False),
         "confidence": confidence_hint,
-    }).to_string()
+    }).to_messages()
 
     def _default():
         return AgentOutput(direction="NEUTRAL", expected_return=0.0, confidence=0.1, reasoning="Insufficient data")
