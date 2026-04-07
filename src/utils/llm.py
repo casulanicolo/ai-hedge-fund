@@ -75,6 +75,9 @@ def call_llm(
     for attempt in range(max_retries):
         try:
             # Call the LLM
+            from langchain_core.prompts import ChatPromptTemplate
+            if isinstance(prompt, ChatPromptTemplate):
+                prompt = prompt.format_messages()
             result = llm.invoke(prompt)
 
             # For non-JSON support models, we need to extract and parse the JSON manually
