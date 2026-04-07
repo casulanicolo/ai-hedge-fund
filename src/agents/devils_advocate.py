@@ -8,8 +8,8 @@ Si esegue dopo tutti gli analyst agent e prima del Risk Manager.
 
 Responsabilità:
   1. VIX Check      – classifica il regime di volatilità di mercato e
-                      produce un size_multiplier globale (1.0 → 0.25).
-  2. Signal Coherence Veto – veta i ticker in cui meno del 60% degli
+                      produce un size_multiplier globale (1.0 → 0.40).
+  2. Signal Coherence Veto – veta i ticker in cui meno del 50% degli
                       agenti concorda sulla stessa direction.
 
 Output scritto in state["data"]["devils_advocate_output"]:
@@ -17,7 +17,7 @@ Output scritto in state["data"]["devils_advocate_output"]:
     "vix_level":             float,
     "vix_regime":            "LOW" | "ELEVATED" | "HIGH" | "EXTREME",
     "macro_risk":            "LOW" | "MEDIUM" | "HIGH",
-    "size_multiplier":       float,   # 0.25 – 1.0
+    "size_multiplier":       float,   # 0.40 – 1.0
     "vetoed_tickers":        list[str],
     "veto_reasons":          dict[str, str],   # ticker -> motivo
     "reasoning":             str,
@@ -42,7 +42,7 @@ AGENT_ID = "devils_advocate"
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch", "portfolio_manager", "prediction_log"}
 
 # Soglia di agreement sotto la quale un ticker viene vetato
-COHERENCE_THRESHOLD = 0.60  # 60%
+COHERENCE_THRESHOLD = 0.50  # 50% (era 60%)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -60,7 +60,7 @@ class DevilsAdvocateOutput(BaseModel):
                                description="Livello di rischio macro complessivo"
                            )
     size_multiplier:       float = Field(
-                               description="Moltiplicatore globale delle size (0.25–1.0)"
+                               description="Moltiplicatore globale delle size (0.40–1.0)"
                            )
     vetoed_tickers:        list[str] = Field(
                                default_factory=list,
@@ -124,20 +124,20 @@ def _classify_vix(vix_level: float) -> tuple[str, float, str]:
     Classifica il VIX in un regime e restituisce:
       (vix_regime, size_multiplier, macro_risk)
 
-    Tabella:
+    Tabella aggiornata:
       VIX < 15  → LOW      → multiplier=1.00 → macro_risk=LOW
-      VIX 15-25 → ELEVATED → multiplier=0.85 → macro_risk=LOW
-      VIX 25-35 → HIGH     → multiplier=0.50 → macro_risk=MEDIUM
-      VIX > 35  → EXTREME  → multiplier=0.25 → macro_risk=HIGH
+      VIX 15-30 → ELEVATED → multiplier=0.85 → macro_risk=LOW
+      VIX 30-40 → HIGH     → multiplier=0.70 → macro_risk=MEDIUM
+      VIX > 40  → EXTREME  → multiplier=0.40 → macro_risk=HIGH
     """
     if vix_level < 15:
         return "LOW", 1.00, "LOW"
-    elif vix_level < 25:
+    elif vix_level < 30:
         return "ELEVATED", 0.85, "LOW"
-    elif vix_level < 35:
-        return "HIGH", 0.50, "MEDIUM"
+    elif vix_level < 40:
+        return "HIGH", 0.70, "MEDIUM"
     else:
-        return "EXTREME", 0.25, "HIGH"
+        return "EXTREME", 0.40, "HIGH"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -153,7 +153,7 @@ def _compute_signal_coherence(
     Per ogni ticker calcola la percentuale di agenti che concordano
     sulla direction di maggioranza.
 
-    Se agreement < COHERENCE_THRESHOLD (60%) → ticker vetato.
+    Se agreement < COHERENCE_THRESHOLD (50%) → ticker vetato.
     In regime EXTREME → tutti i ticker vengono vetati indipendentemente.
 
     Ritorna (vetoed_tickers, veto_reasons).
