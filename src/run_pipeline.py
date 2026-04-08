@@ -1,4 +1,4 @@
-"""
+﻿"""
 Athanor Alpha — Pipeline principale.
 Esegue: prefetch → agenti → risk → portfolio → log predictions → time exit → email report.
 
@@ -356,6 +356,41 @@ def _build_digest(final_state, tickers, run_id, mode):
   <p style="font-size:13px;margin:8px 0 0;color:#444">{rec.get('reasoning','')}</p>
 </div>"""
 
+    # --- DEVIL VETO BLOCK ---
+    da_out = final_state.get("data", {}).get("devils_advocate_output", {})
+    da_vetoed = da_out.get("vetoed_tickers", [])
+    da_reasons = da_out.get("veto_reasons", {})
+    da_vix = da_out.get("vix_level", 0.0)
+    da_regime = da_out.get("vix_regime", "")
+
+    veto_html = ""
+    if da_vetoed:
+        veto_cards = ""
+        for vt in da_vetoed:
+            veto_reason = da_reasons.get(vt, "Vetoed by Devil's Advocate")
+            veto_rec = next((r for r in recs if r.get("ticker") == vt), None)
+            levels_html_veto = ""
+            if veto_rec and veto_rec.get("entry_price") is not None:
+                levels_html_veto = (
+                    f"<div style='margin-top:8px;font-size:12px;color:#555'>"
+                    f"Entry: <b>${veto_rec['entry_price']:.2f}</b> &nbsp;|&nbsp; "
+                    f"SL: <b style='color:#c0392b'>${veto_rec['stop_loss']:.2f}</b> &nbsp;|&nbsp; "
+                    f"TP: <b style='color:#27ae60'>${veto_rec['take_profit']:.2f}</b>"
+                    f"</div>"
+                )
+            veto_cards += (
+                f"<div style='border:1px solid #e67e22;border-left:4px solid #e67e22;border-radius:4px;padding:12px 14px;margin:8px 0;background:#fef5ec;'>"
+                f"<div style='font-size:15px;font-weight:bold;color:#d35400'>&#9888; {vt} "
+                f"<span style='font-size:12px;font-weight:normal;color:#e67e22'>INGRESSO NON CONFERMATO DAL DEVIL AGENT</span></div>"
+                f"<div style='font-size:12px;color:#7f6000;margin-top:6px'><b>Motivazione veto:</b> {veto_reason}</div>"
+                f"{levels_html_veto}</div>"
+            )
+        veto_html = (
+            f"<div style='margin:16px 0'><h3 style='color:#d35400;margin-bottom:8px'>&#9888; Devil's Advocate &mdash; Ticker Vetati "
+            f"<span style='font-size:12px;font-weight:normal;color:#888'>(VIX={da_vix:.1f} &middot; {da_regime})</span></h3>"
+            f"{veto_cards}</div>"
+        )
+
     summary_html = portfolio_output.get("portfolio_summary", "") if isinstance(portfolio_output, dict) else ""
     risk_html    = portfolio_output.get("risk_notes", "")         if isinstance(portfolio_output, dict) else ""
 
@@ -374,10 +409,10 @@ def _build_digest(final_state, tickers, run_id, mode):
 
     {agents_section_html}
 
+    {veto_html}
     <h3>💼 Raccomandazioni Portfolio Manager</h3>
     {f'<p style="background:#f8f9fa;padding:10px;border-radius:4px">{summary_html}</p>' if summary_html else ''}
     {recs_html}
-    {f'<div style="background:#fef5ec;border-left:4px solid #d35400;padding:10px;margin-top:16px;font-size:13px"><b>⚠️ Risk Notes:</b> {risk_html}</div>' if risk_html else ''}
 
   </div>
   <div style="background:#f8f9fa;padding:14px 28px;font-size:11px;color:#999;text-align:center">
