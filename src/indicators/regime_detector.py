@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 def detect_macro_regime() -> dict:
     """
     Scarica il VIX da yfinance e classifica il regime macro:
-      - RISK_ON   (VIX < 20): mercato tranquillo, sizing normale
-      - CAUTION   (VIX 20-30): volatilità elevata, sizing ridotto del 30%
-      - RISK_OFF  (VIX > 30): paura/crisi, evitare nuovi long
+      - RISK_ON   (VIX < 25): mercato tranquillo, sizing normale
+      - CAUTION   (VIX 25-35): volatilità elevata, sizing ridotto del 30%
+      - RISK_OFF  (VIX > 35): paura/crisi, evitare nuovi long
 
     Returns:
         dict con:
@@ -45,18 +45,18 @@ def detect_macro_regime() -> dict:
             "description": "VIX non disponibile — regime CAUTION per precauzione.",
         }
 
-    if vix < 20:
+    if vix < 25:
         regime = "RISK_ON"
         multiplier = 1.0
-        desc = f"VIX {vix:.1f} < 20 — mercato tranquillo, sizing pieno."
-    elif vix <= 30:
+        desc = f"VIX {vix:.1f} < 25 — mercato tranquillo, sizing pieno."
+    elif vix <= 35:
         regime = "CAUTION"
         multiplier = 0.7
-        desc = f"VIX {vix:.1f} tra 20-30 — volatilità elevata, sizing ridotto al 70%."
+        desc = f"VIX {vix:.1f} tra 25-35 — volatilità elevata, sizing ridotto al 70%."
     else:
         regime = "RISK_OFF"
         multiplier = 0.3
-        desc = f"VIX {vix:.1f} > 30 — paura/crisi, sizing ridotto al 30%."
+        desc = f"VIX {vix:.1f} > 35 — paura/crisi, sizing ridotto al 30%."
 
     return {
         "macro_regime": regime,
