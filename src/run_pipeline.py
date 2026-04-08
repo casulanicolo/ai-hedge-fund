@@ -193,8 +193,8 @@ def _build_digest(final_state, tickers, run_id, mode):
             if ticker not in agent_data:
                 continue
             sig = agent_data[ticker]
-            raw_signal = str(sig.get("signal", "HOLD")).upper()
-            direction = {"BULLISH": "BUY", "BEARISH": "SELL", "NEUTRAL": "HOLD"}.get(raw_signal, raw_signal)
+            raw_signal = str(sig.get("direction", sig.get("signal", "HOLD"))).upper()
+            direction = {"BULLISH": "BUY", "BEARISH": "SELL", "NEUTRAL": "HOLD", "LONG": "BUY", "SHORT": "SELL"}.get(raw_signal, raw_signal)
             conf = float(sig.get("confidence", 0))
             if direction in ticker_votes[ticker]:
                 ticker_votes[ticker][direction] += 1
