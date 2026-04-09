@@ -260,8 +260,8 @@ elif page == "📋 Segnali recenti":
         return f"color: {c}; font-weight:600"
 
     styled = view_disp.style\
-        .applymap(color_pnl, subset=[c for c in ["actual_return_1d", "actual_return_5d", "actual_return_20d"] if c in view_disp.columns])\
-        .applymap(color_signal, subset=["signal"])\
+        .map(color_pnl, subset=[c for c in ["actual_return_1d", "actual_return_5d", "actual_return_20d"] if c in view_disp.columns])\
+        .map(color_signal, subset=["signal"])\
         .format({
             "confidence": "{:.2f}",
             "entry_price": "${:.2f}",
@@ -420,8 +420,8 @@ elif page == "🔁 Pipeline runs":
         st.info("Nessun run registrato.")
         st.stop()
 
-    success = (runs["status"] == "success").sum()
-    failed = (runs["status"] != "success").sum()
+    success = runs["status"].str.lower().str.contains("success|completed", na=False).sum()
+    failed = (~runs["status"].str.lower().str.contains("success|completed", na=False)).sum()
     c1, c2, c3 = st.columns(3)
     c1.metric("Run totali", len(runs))
     c2.metric("✅ Success", success)
@@ -430,13 +430,13 @@ elif page == "🔁 Pipeline runs":
     st.subheader("Run recenti")
 
     def color_status(val):
-        if val == "success":
+        if str(val).lower() in ("success", "completed"):
             return "color: #26a69a; font-weight:600"
         return "color: #ef5350; font-weight:600"
 
     disp = runs[["started_at", "status", "tickers", "error_msg"]].head(50).copy()
     disp["started_at"] = disp["started_at"].dt.strftime("%Y-%m-%d %H:%M UTC")
-    styled_runs = disp.style.applymap(color_status, subset=["status"])
+    styled_runs = disp.style.map(color_status, subset=["status"])
     st.dataframe(styled_runs, use_container_width=True, height=450)
 
     if failed > 0:
