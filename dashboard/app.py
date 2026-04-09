@@ -33,6 +33,12 @@ AGENT_LABELS = {
 
 SIGNAL_COLORS = {"BUY": "#26a69a", "SELL": "#ef5350", "HOLD": "#78909c"}
 
+ACTION_BG = {
+    "BUY":  "#d4f4e2",
+    "SELL": "#fde0e0",
+    "HOLD": "#f5f5f5",
+}
+
 # ── DB helper ────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def load_data():
@@ -40,7 +46,7 @@ def load_data():
 
     predictions = pd.read_sql("""
         SELECT id, run_id, agent_id, ticker, signal, confidence,
-               timestamp, expected_return, entry_price, stop_loss, take_profit
+               timestamp, entry_price, stop_loss, take_profit
         FROM predictions
         ORDER BY timestamp DESC
     """, conn)
@@ -85,12 +91,11 @@ def load_data():
         predictions["agent_id"]
     )
 
-    # ── Join predictions + outcomes (1d pivot) ──
+    # ── Join predictions + outcomes ──
     out_1d = outcomes[outcomes["window"] == "1d"][["prediction_id", "actual_return_1d"]].copy()
     out_5d = outcomes[outcomes["window"] == "5d"][["prediction_id", "actual_return_5d"]].copy()
     out_20d = outcomes[outcomes["window"] == "20d"][["prediction_id", "actual_return_20d"]].copy()
 
-    # If window column not populated, use unique prediction_id rows
     if out_1d.empty:
         out_1d = outcomes[["prediction_id", "actual_return_1d"]].dropna(
             subset=["actual_return_1d"]
@@ -111,15 +116,58 @@ def load_data():
     return merged, agent_weights, pipeline_runs, positions, signal_cache
 
 
+@st.cache_data(ttl=60)
+def load_portfolio_decisions():
+    """Carica la tabella portfolio_decisions dal DB."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        dec = pd.read_sql("""
+            SELECT
+                id, run_id, timestamp, ticker, action,
+                net_score, avg_confidence, weighted_conviction, conviction,
+                sizing_pct, consensus,
+                entry_price, stop_loss, take_profit, size_usd, rr_ratio,
+                info_entry, info_sl, info_tp, info_size_usd, info_rr_ratio, info_direction,
+                devil_vetoed, reasoning
+            FROM portfolio_decisions
+            ORDER BY timestamp DESC
+        """, conn)
+    except Exception:
+        dec = pd.DataFrame()
+    conn.close()
+
+    if not dec.empty:
+        dec["timestamp"] = pd.to_datetime(dec["timestamp"], utc=True, errors="coerce")
+        dec["date"] = dec["timestamp"].dt.date
+        dec["devil_vetoed"] = dec["devil_vetoed"].astype(bool)
+
+    return dec
+
+
+# ── Leggi query params ────────────────────────────────────────────────────────
+query_params = st.query_params
+ticker_from_url = query_params.get("ticker", None)
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.image("https://img.icons8.com/fluency/96/fire-element.png", width=60)
 st.sidebar.title("Athanor Alpha")
 st.sidebar.caption("Multi-Agent Trading Dashboard")
 
-page = st.sidebar.radio(
-    "Pannello",
-    ["🏠 Overview", "📋 Segnali recenti", "📈 Performance", "⚖️ Pesi agenti", "🔁 Pipeline runs"],
-)
+PAGES = [
+    "🏠 Overview",
+    "📋 Segnali recenti",
+    "📊 Decisioni Portfolio",
+    "📈 Performance",
+    "⚖️ Pesi agenti",
+    "🔁 Pipeline runs",
+]
+
+# Se arriva un ?ticker= dall'email, pre-seleziona "Segnali recenti"
+default_page_idx = 0
+if ticker_from_url:
+    default_page_idx = PAGES.index("📋 Segnali recenti")
+
+page = st.sidebar.radio("Pannello", PAGES, index=default_page_idx)
 
 st.sidebar.divider()
 st.sidebar.caption(f"DB: `{DB_PATH}`")
@@ -130,6 +178,7 @@ if st.sidebar.button("🔄 Refresh dati"):
 # ── Load ─────────────────────────────────────────────────────────────────────
 try:
     df, weights, runs, positions, cache = load_data()
+    decisions = load_portfolio_decisions()
 except Exception as e:
     st.error(f"Errore connessione DB: {e}")
     st.stop()
@@ -142,7 +191,6 @@ def win_rate(series):
     return (s > 0).sum() / len(s)
 
 def pnl_cumulative(sub):
-    """Simulated cumulative P&L assuming 1% portfolio per signal."""
     s = sub["actual_return_5d"].dropna()
     return (s * 0.01).cumsum()
 
@@ -219,13 +267,19 @@ if page == "🏠 Overview":
 elif page == "📋 Segnali recenti":
     st.title("📋 Segnali recenti")
 
-    # ── Filtri ──
+    # ── Filtri — pre-popola ticker da query param ?ticker= ──
     col1, col2, col3, col4 = st.columns(4)
-    tickers = ["Tutti"] + sorted(df["ticker"].unique().tolist())
+    tickers_list = ["Tutti"] + sorted(df["ticker"].unique().tolist())
     signals = ["Tutti", "BUY", "SELL", "HOLD"]
     agents = ["Tutti"] + sorted(df["agent_label"].unique().tolist())
 
-    sel_ticker = col1.selectbox("Ticker", tickers)
+    # Pre-seleziona ticker se arriva dall'URL
+    default_ticker_idx = 0
+    if ticker_from_url and ticker_from_url in tickers_list:
+        default_ticker_idx = tickers_list.index(ticker_from_url)
+        st.info(f"🔗 Filtro applicato automaticamente: **{ticker_from_url}** (link dall'email)")
+
+    sel_ticker = col1.selectbox("Ticker", tickers_list, index=default_ticker_idx)
     sel_signal = col2.selectbox("Segnale", signals)
     sel_agent = col3.selectbox("Agente", agents)
     min_conf = col4.slider("Min confidence", 0.0, 1.0, 0.0, 0.05)
@@ -241,14 +295,12 @@ elif page == "📋 Segnali recenti":
 
     st.caption(f"{len(view):,} segnali filtrati")
 
-    # ── Colonne display ──
     display_cols = ["date", "agent_label", "ticker", "signal", "confidence",
                     "entry_price", "take_profit", "stop_loss",
                     "actual_return_1d", "actual_return_5d", "actual_return_20d"]
     display_cols = [c for c in display_cols if c in view.columns]
     view_disp = view[display_cols].head(200).copy()
 
-    # ── Colorazione condizionale P&L ──
     def color_pnl(val):
         if pd.isna(val):
             return "color: #78909c"
@@ -276,6 +328,212 @@ elif page == "📋 Segnali recenti":
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# PAGE: DECISIONI PORTFOLIO
+# ════════════════════════════════════════════════════════════════════════════
+elif page == "📊 Decisioni Portfolio":
+    st.title("📊 Decisioni Portfolio")
+
+    if decisions.empty:
+        st.info("Nessuna decisione salvata ancora. Esegui almeno un run completo della pipeline.")
+        st.stop()
+
+    # ── Selezione run ──
+    run_ids = decisions["run_id"].unique().tolist()
+    # Mostra data leggibile nel dropdown
+    run_labels = {}
+    for rid in run_ids:
+        ts = decisions[decisions["run_id"] == rid]["timestamp"].max()
+        run_labels[rid] = f"{ts.strftime('%Y-%m-%d %H:%M UTC') if pd.notna(ts) else rid}  ({rid[:8]}…)"
+
+    selected_run = st.selectbox(
+        "Seleziona run",
+        options=run_ids,
+        format_func=lambda x: run_labels.get(x, x),
+    )
+
+    dec_run = decisions[decisions["run_id"] == selected_run].copy()
+
+    # ── KPI del run selezionato ──
+    n_buy  = (dec_run["action"] == "BUY").sum()
+    n_sell = (dec_run["action"] == "SELL").sum()
+    n_hold = (dec_run["action"] == "HOLD").sum()
+    n_veto = dec_run["devil_vetoed"].sum()
+    total_long = dec_run[dec_run["action"] == "BUY"]["sizing_pct"].sum()
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("BUY", n_buy)
+    c2.metric("SELL", n_sell)
+    c3.metric("HOLD", n_hold)
+    c4.metric("DA Vetoed", int(n_veto))
+    c5.metric("Gross Long %", f"{total_long:.1f}%")
+
+    st.divider()
+
+    # ── Tabella principale del run ──
+    st.subheader("Riepilogo decisioni")
+
+    def _fmt_price(v):
+        return f"${v:,.2f}" if pd.notna(v) else "—"
+
+    def _fmt_size(v):
+        return f"${v:,.0f}" if pd.notna(v) else "—"
+
+    def _fmt_pct(v):
+        return f"{v:.1f}%" if pd.notna(v) else "—"
+
+    def _fmt_score(v):
+        return f"{v:+.3f}" if pd.notna(v) else "—"
+
+    def _fmt_rr(v):
+        return f"1:{v:.0f}" if pd.notna(v) else "—"
+
+    rows_html = ""
+    for _, row in dec_run.sort_values(["action", "conviction"], ascending=[True, False]).iterrows():
+        action  = row["action"]
+        ticker  = row["ticker"]
+        vetoed  = row["devil_vetoed"]
+
+        # Colori riga
+        if action == "BUY":
+            row_bg = "#f0faf5"
+            row_text = "#1a3a2a"
+            action_style = "background:#d4f4e2;color:#1a7a4a;border:1px solid #1a7a4a;"
+        elif action == "SELL":
+            row_bg = "#fff5f5"
+            row_text = "#3a1a1a"
+            action_style = "background:#fde0e0;color:#b03030;border:1px solid #b03030;"
+        elif vetoed:
+            row_bg = "#fff8f0"
+            row_text = "#3a2a1a"
+            action_style = "background:#ffe8cc;color:#b05000;border:1px solid #b05000;"
+        else:
+            row_bg = "#fafafa"
+            row_text = "#333333"
+            action_style = "background:#f0f0f0;color:#555;border:1px solid #aaa;"
+
+        # Livelli da mostrare: operativi se BUY/SELL, informativi se HOLD
+        if action in ("BUY", "SELL") and pd.notna(row.get("entry_price")):
+            e_str  = _fmt_price(row["entry_price"])
+            sl_str = _fmt_price(row["stop_loss"])
+            tp_str = _fmt_price(row["take_profit"])
+            sz_str = _fmt_size(row["size_usd"])
+            rr_str = _fmt_rr(row["rr_ratio"])
+            levels_note = ""
+        elif pd.notna(row.get("info_entry")):
+            e_str  = _fmt_price(row["info_entry"]) + " ℹ"
+            sl_str = _fmt_price(row["info_sl"])
+            tp_str = _fmt_price(row["info_tp"])
+            sz_str = _fmt_size(row["info_size_usd"])
+            rr_str = _fmt_rr(row["info_rr_ratio"])
+            levels_note = '<span style="font-size:10px;color:#888;">(informativi)</span>'
+        else:
+            e_str = sl_str = tp_str = sz_str = rr_str = "—"
+            levels_note = ""
+
+        veto_badge = ' <span style="font-size:10px;background:#ffe0cc;color:#b05000;padding:1px 5px;border-radius:3px;">DA veto</span>' if vetoed else ""
+
+        rows_html += f"""
+        <tr style="background:{row_bg};border-bottom:1px solid #e0e0e0;color:{row_text};">
+          <td style="padding:8px 10px;font-weight:700;color:{row_text};">{ticker}{veto_badge}</td>
+          <td style="padding:8px 8px;"><span style="{action_style}padding:2px 8px;border-radius:3px;font-size:12px;font-weight:700;">{action}</span></td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{_fmt_score(row.get('net_score'))}</td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{_fmt_score(row.get('weighted_conviction'))}</td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{_fmt_pct(row.get('conviction', 0) * 100 if pd.notna(row.get('conviction')) else None)}</td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{row.get('consensus', '—')}</td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{e_str} {levels_note}</td>
+          <td style="padding:8px 8px;font-size:12px;color:#b03030;">{sl_str}</td>
+          <td style="padding:8px 8px;font-size:12px;color:#1a7a4a;">{tp_str}</td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{sz_str}</td>
+          <td style="padding:8px 8px;font-size:12px;color:{row_text};">{rr_str}</td>
+          <td style="padding:8px 8px;font-size:11px;color:#444;max-width:220px;">{str(row.get('reasoning',''))[:80]}…</td>
+        </tr>"""
+
+    table_html = f"""
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="background:#0d1b2a;color:#a0b4c8;text-align:left;">
+          <th style="padding:8px 10px;">Ticker</th>
+          <th style="padding:8px 8px;">Azione</th>
+          <th style="padding:8px 8px;">Net Score</th>
+          <th style="padding:8px 8px;">WC</th>
+          <th style="padding:8px 8px;">Conviction</th>
+          <th style="padding:8px 8px;">Consensus</th>
+          <th style="padding:8px 8px;">Entry</th>
+          <th style="padding:8px 8px;color:#e07070;">SL</th>
+          <th style="padding:8px 8px;color:#70c070;">TP</th>
+          <th style="padding:8px 8px;">Size $</th>
+          <th style="padding:8px 8px;">R:R</th>
+          <th style="padding:8px 8px;">Reasoning</th>
+        </tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>"""
+
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Storico conviction per ticker nel tempo ──
+    st.subheader("📈 Storico conviction per ticker")
+
+    tickers_with_data = sorted(decisions["ticker"].unique().tolist())
+    sel_tickers_hist = st.multiselect(
+        "Seleziona ticker",
+        options=tickers_with_data,
+        default=tickers_with_data[:min(5, len(tickers_with_data))],
+    )
+
+    if sel_tickers_hist:
+        hist_data = decisions[decisions["ticker"].isin(sel_tickers_hist)].copy()
+        hist_data = hist_data.sort_values("timestamp")
+
+        fig_conv = px.line(
+            hist_data,
+            x="timestamp",
+            y="conviction",
+            color="ticker",
+            markers=True,
+            labels={"timestamp": "Data", "conviction": "Conviction", "ticker": "Ticker"},
+            title="Conviction nel tempo per ticker",
+        )
+        fig_conv.add_hline(y=0.30, line_dash="dot", line_color="orange",
+                           annotation_text="MIN_CONVICTION_TO_TRADE=0.30")
+        fig_conv.update_layout(height=350, margin=dict(t=40))
+        st.plotly_chart(fig_conv, use_container_width=True)
+
+        fig_ns = px.line(
+            hist_data,
+            x="timestamp",
+            y="net_score",
+            color="ticker",
+            markers=True,
+            labels={"timestamp": "Data", "net_score": "Net Score", "ticker": "Ticker"},
+            title="Net Score nel tempo per ticker",
+        )
+        fig_ns.add_hline(y=0.25, line_dash="dot", line_color="#26a69a",
+                         annotation_text="BUY threshold")
+        fig_ns.add_hline(y=-0.25, line_dash="dot", line_color="#ef5350",
+                         annotation_text="SELL threshold")
+        fig_ns.add_hline(y=0, line_dash="solid", line_color="white", opacity=0.2)
+        fig_ns.update_layout(height=350, margin=dict(t=40))
+        st.plotly_chart(fig_ns, use_container_width=True)
+
+    st.divider()
+
+    # ── Distribuzione azioni per run ──
+    st.subheader("Distribuzione azioni storiche per run")
+    action_hist = decisions.groupby(["date", "action"]).size().reset_index(name="n")
+    fig_act = px.bar(
+        action_hist, x="date", y="n", color="action",
+        color_discrete_map={"BUY": "#26a69a", "SELL": "#ef5350", "HOLD": "#78909c"},
+        labels={"date": "Data", "n": "# Ticker", "action": "Azione"},
+        barmode="stack",
+    )
+    fig_act.update_layout(height=300, margin=dict(t=20))
+    st.plotly_chart(fig_act, use_container_width=True)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # PAGE: PERFORMANCE
 # ════════════════════════════════════════════════════════════════════════════
 elif page == "📈 Performance":
@@ -283,15 +541,14 @@ elif page == "📈 Performance":
 
     active = df[df["signal"].isin(["BUY", "SELL"])].copy()
 
-    # ── KPI row ──
-    wr_1d = win_rate(active["actual_return_1d"])
-    wr_5d = win_rate(active["actual_return_5d"])
+    wr_1d  = win_rate(active["actual_return_1d"])
+    wr_5d  = win_rate(active["actual_return_5d"])
     wr_20d = win_rate(active["actual_return_20d"])
     n_eval = active["actual_return_5d"].notna().sum()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Win rate 1d", f"{wr_1d*100:.1f}%" if wr_1d else "N/A")
-    c2.metric("Win rate 5d", f"{wr_5d*100:.1f}%" if wr_5d else "N/A")
+    c1.metric("Win rate 1d",  f"{wr_1d*100:.1f}%"  if wr_1d  else "N/A")
+    c2.metric("Win rate 5d",  f"{wr_5d*100:.1f}%"  if wr_5d  else "N/A")
     c3.metric("Win rate 20d", f"{wr_20d*100:.1f}%" if wr_20d else "N/A")
     c4.metric("Segnali valutati (5d)", n_eval)
 
@@ -368,7 +625,6 @@ elif page == "⚖️ Pesi agenti":
 
     weights["agent_label"] = weights["agent_id"].map(AGENT_LABELS).fillna(weights["agent_id"])
 
-    # ── Pesi correnti (ultimo per agente+ticker) ──
     latest = weights.sort_values("updated_at").groupby(["agent_id", "ticker"]).last().reset_index()
     latest["agent_label"] = latest["agent_id"].map(AGENT_LABELS).fillna(latest["agent_id"])
 
@@ -421,7 +677,7 @@ elif page == "🔁 Pipeline runs":
         st.stop()
 
     success = runs["status"].str.lower().str.contains("success|completed", na=False).sum()
-    failed = (~runs["status"].str.lower().str.contains("success|completed", na=False)).sum()
+    failed  = (~runs["status"].str.lower().str.contains("success|completed", na=False)).sum()
     c1, c2, c3 = st.columns(3)
     c1.metric("Run totali", len(runs))
     c2.metric("✅ Success", success)
