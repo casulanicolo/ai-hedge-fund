@@ -1,4 +1,4 @@
-﻿"""
+"""
 Athanor Alpha — Pipeline principale.
 Esegue: prefetch → agenti → risk → portfolio → log predictions → time exit → email report.
 
@@ -477,6 +477,19 @@ def run_pipeline(tickers, send_email=True, mode="full"):
                     log.warning("[4/4] send_digest ha restituito False — controlla SMTP.")
             except Exception as e:
                 log.warning(f"[4/4] Email fallita (non bloccante): {e}")
+
+            # ── Fase 3: invia anche il report HTML con Segnali Informativi ──
+            try:
+                from src.utils.email_report import send_daily_report
+                from src.agents.portfolio_manager import _weighted_signals
+                _portfolio = final_state.get("data", {}).get("portfolio_recommendations", {})
+                _risk      = final_state.get("data", {}).get("risk_report", {})
+                _tickers   = final_state.get("data", {}).get("tickers", tickers)
+                _weighted  = _weighted_signals(final_state, _tickers)
+                send_daily_report(_portfolio, _risk, weighted=_weighted)
+                log.info("[4/4] Report HTML (Fase 3) inviato.")
+            except Exception as e:
+                log.warning(f"[4/4] Report HTML Fase 3 fallito (non bloccante): {e}")
         else:
             log.info("[4/4] Email saltata.")
 

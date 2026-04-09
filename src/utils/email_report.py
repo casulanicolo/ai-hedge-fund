@@ -27,6 +27,9 @@ SMTP_USER     = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 EMAIL_TO      = os.getenv("REPORT_EMAIL_TO", SMTP_USER)
 
+# ── Dashboard URL ──────────────────────────────────────────────────────────────
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8501")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HTML builder
@@ -92,15 +95,16 @@ def _trade_plan_rows(recommendations: list[dict]) -> str:
         tp_str    = f"${tp:,.2f}"    if tp    is not None else "—"
         size_str  = f"${size:,.0f}"  if size  is not None and size > 0 else "—"
         rr_str    = f"1:{rr:.0f}"    if rr    is not None else "—"
-        conv_pct  = f"{int(conv * 100)}%"
 
         # SL in red, TP in green for BUY; reversed for SELL
         sl_color = "#b03030" if action == "BUY" else "#1a7a4a"
         tp_color = "#1a7a4a" if action == "BUY" else "#b03030"
 
+        ticker_link = f'<a href="{DASHBOARD_URL}/?ticker={ticker}" style="color:#0d1b2a;text-decoration:none;font-weight:700;font-size:14px;">{ticker}</a>'
+
         rows += f"""
         <tr style="border-bottom:1px solid #e8e8e8;">
-          <td style="padding:10px 10px;font-weight:700;font-size:14px;">{ticker}</td>
+          <td style="padding:10px 10px;">{ticker_link}</td>
           <td style="padding:10px 8px;">
             <span style="background:{bg};color:{fg};font-weight:700;padding:3px 8px;
                          border-radius:4px;font-size:12px;border:1px solid {fg};">{action}</span>
@@ -111,6 +115,122 @@ def _trade_plan_rows(recommendations: list[dict]) -> str:
           <td style="padding:10px 8px;font-weight:700;font-size:13px;color:#0d1b2a;">{size_str}</td>
           <td style="padding:10px 8px;font-size:12px;font-weight:600;color:#555;">{rr_str}</td>
           <td style="padding:10px 8px;font-size:11px;color:#555;">{cons}</td>
+        </tr>"""
+    return rows
+
+
+def _info_signals_rows(recommendations: list[dict], weighted: dict | None = None) -> str:
+    """
+    Genera righe HTML per la tabella Segnali Informativi.
+    Include TUTTI i ticker con colonne estese + link dashboard + nota motivo HOLD.
+    """
+    weighted = weighted or {}
+
+    # Ordine: BUY/SELL prima (per conviction), poi HOLD per |net_score| desc
+    active = sorted(
+        [r for r in recommendations if r.get("action") in ("BUY", "SELL")],
+        key=lambda r: -r.get("conviction", 0),
+    )
+    hold = sorted(
+        [r for r in recommendations if r.get("action") == "HOLD"],
+        key=lambda r: -abs(r.get("conviction", 0)),
+    )
+    all_recs = active + hold
+
+    if not all_recs:
+        return '<tr><td colspan="11" style="padding:12px;color:#888;font-style:italic;">Nessun segnale disponibile.</td></tr>'
+
+    rows = ""
+    for rec in all_recs:
+        ticker       = rec.get("ticker", "?")
+        action       = rec.get("action", "HOLD")
+        conviction   = rec.get("conviction", 0.0)
+        consensus    = rec.get("consensus", "—")
+        wc           = rec.get("weighted_conviction", 0.0)
+        devil_vetoed = rec.get("devil_vetoed", False)
+
+        # Net score dall'aggregato weighted (per mostrare la direzione potenziale)
+        agg       = weighted.get(ticker, {})
+        net_score = agg.get("net_score", 0.0)
+        bull_n    = len(agg.get("bull_agents", []))
+        bear_n    = len(agg.get("bear_agents", []))
+        n_agents  = agg.get("n_agents", 0)
+        votes_str = f"{bull_n}B/{bear_n}S/{max(0, n_agents - bull_n - bear_n)}H" if n_agents else "—"
+
+        # Livelli: operativi se BUY/SELL, informativi se HOLD
+        if action in ("BUY", "SELL") and rec.get("entry_price") is not None:
+            entry    = rec.get("entry_price")
+            sl       = rec.get("stop_loss")
+            tp       = rec.get("take_profit")
+            size     = rec.get("size_usd")
+            rr       = rec.get("rr_ratio")
+            info_dir = "long" if action == "BUY" else "short"
+        else:
+            entry    = rec.get("info_entry")
+            sl       = rec.get("info_sl")
+            tp       = rec.get("info_tp")
+            size     = rec.get("info_size_usd")
+            rr       = rec.get("info_rr_ratio")
+            info_dir = rec.get("info_direction")
+
+        entry_str = f"${entry:,.2f}" if entry is not None else "—"
+        sl_str    = f"${sl:,.2f}"    if sl    is not None else "—"
+        tp_str    = f"${tp:,.2f}"    if tp    is not None else "—"
+        size_str  = f"${size:,.0f}"  if size  is not None and size > 0 else "—"
+        rr_str    = f"1:{rr:.0f}"    if rr    is not None else "—"
+        dir_str   = f"↑ {info_dir}" if info_dir == "long" else (f"↓ {info_dir}" if info_dir == "short" else "—")
+        wc_str    = f"{wc:+.4f}"
+        ns_str    = f"{net_score:+.3f}"
+
+        # Nota motivo HOLD
+        if action in ("BUY", "SELL"):
+            note = "✅ Trade attivo"
+            note_color = "#1a7a4a"
+        elif devil_vetoed:
+            note = "🚫 Devil's Advocate veto"
+            note_color = "#b03030"
+        elif conviction < 0.30:
+            note = "⚠ Sotto soglia conviction"
+            note_color = "#c47a00"
+        elif abs(net_score) < 0.25:
+            note = "⚠ Net score insufficiente"
+            note_color = "#c47a00"
+        else:
+            note = "⚠ Consensus insufficiente"
+            note_color = "#c47a00"
+
+        fg = ACTION_COLOR.get(action, "#888")
+        bg = ACTION_BG.get(action, "#f9f9f9")
+
+        # Colori SL/TP basati sulla direzione potenziale
+        if info_dir == "long" or action == "BUY":
+            sl_color = "#b03030"
+            tp_color = "#1a7a4a"
+        elif info_dir == "short" or action == "SELL":
+            sl_color = "#1a7a4a"
+            tp_color = "#b03030"
+        else:
+            sl_color = "#888"
+            tp_color = "#888"
+
+        ticker_link = f'<a href="{DASHBOARD_URL}/?ticker={ticker}" style="color:#0d1b2a;text-decoration:none;font-weight:700;font-size:13px;">{ticker}</a>'
+
+        rows += f"""
+        <tr style="border-bottom:1px solid #e8e8e8;">
+          <td style="padding:8px 8px;">{ticker_link}</td>
+          <td style="padding:8px 6px;font-size:11px;color:#444;">{votes_str}</td>
+          <td style="padding:8px 6px;font-size:11px;font-weight:600;color:#333;">{ns_str}</td>
+          <td style="padding:8px 6px;font-size:11px;color:#555;">{wc_str}</td>
+          <td style="padding:8px 6px;">
+            <span style="background:{bg};color:{fg};font-weight:700;padding:2px 6px;
+                         border-radius:3px;font-size:11px;border:1px solid {fg};">{action}</span>
+          </td>
+          <td style="padding:8px 6px;font-size:11px;color:#555;">{dir_str}</td>
+          <td style="padding:8px 6px;font-size:11px;color:#333;">{entry_str}</td>
+          <td style="padding:8px 6px;font-size:11px;color:{sl_color};">{sl_str}</td>
+          <td style="padding:8px 6px;font-size:11px;color:{tp_color};">{tp_str}</td>
+          <td style="padding:8px 6px;font-size:11px;color:#333;">{size_str} {rr_str}</td>
+          <td style="padding:8px 6px;font-size:10px;color:{note_color};font-weight:600;">{note}</td>
         </tr>"""
     return rows
 
@@ -155,7 +275,7 @@ def _warning_block(warnings: list[str]) -> str:
     </div>"""
 
 
-def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
+def build_html(portfolio: dict, risk_report: dict, run_date: str, weighted: dict | None = None) -> str:
     recs            = portfolio.get("recommendations", [])
     summary         = portfolio.get("portfolio_summary", "")
     risk_notes      = portfolio.get("risk_notes", "")
@@ -168,9 +288,10 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
     warnings        = risk_report.get("warnings", [])
     risk_ok         = risk_report.get("risk_ok", True)
 
-    trade_rows = _trade_plan_rows(recs)
-    rec_rows   = _recommendation_rows(recs)
-    warn_block = _warning_block(warnings)
+    trade_rows  = _trade_plan_rows(recs)
+    info_rows   = _info_signals_rows(recs, weighted or {})
+    rec_rows    = _recommendation_rows(recs)
+    warn_block  = _warning_block(warnings)
     risk_badge = (
         '<span style="color:#1a7a4a;font-weight:700;">✅ CLEAR</span>' if risk_ok
         else f'<span style="color:#b03030;font-weight:700;">⚠ {len(warnings)} WARNING{"S" if len(warnings)>1 else ""}</span>'
@@ -183,7 +304,7 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
 
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 0;">
 <tr><td align="center">
-<table width="640" cellpadding="0" cellspacing="0"
+<table width="700" cellpadding="0" cellspacing="0"
        style="background:#ffffff;border-radius:8px;overflow:hidden;
               box-shadow:0 2px 8px rgba(0,0,0,0.10);">
 
@@ -195,6 +316,8 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
       </h1>
       <p style="margin:4px 0 0 0;color:#a0b4c8;font-size:13px;">
         Daily Portfolio Report &nbsp;·&nbsp; {run_date}
+        &nbsp;·&nbsp;
+        <a href="{DASHBOARD_URL}" style="color:#7eb8e8;font-size:12px;">📊 Apri Dashboard</a>
       </p>
     </td>
   </tr>
@@ -250,8 +373,9 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
     <td style="padding:12px 32px 8px 32px;">
       <h2 style="margin:0 0 4px 0;font-size:15px;color:#0d1b2a;">Trade Plan</h2>
       <p style="margin:0 0 10px 0;font-size:11px;color:#888;">
-        Entry = last close &nbsp;·&nbsp; SL = entry &plusmn; 2&times;ATR(14) &nbsp;·&nbsp;
-        TP = entry &plusmn; 4&times;ATR(14) &nbsp;·&nbsp; Size = 1% risk per trade
+        Entry = last close &nbsp;·&nbsp; SL = entry &plusmn; 1&times;ATR(14) &nbsp;·&nbsp;
+        TP = entry &plusmn; 2&times;ATR(14) &nbsp;·&nbsp; Size = 1% risk per trade
+        &nbsp;·&nbsp; Click sul ticker per aprire la dashboard
       </p>
       <table width="100%" cellpadding="0" cellspacing="0"
              style="border-collapse:collapse;font-size:12px;">
@@ -269,6 +393,39 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
         </thead>
         <tbody>
           {trade_rows}
+        </tbody>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Segnali Informativi -->
+  <tr>
+    <td style="padding:12px 32px 8px 32px;">
+      <h2 style="margin:0 0 4px 0;font-size:15px;color:#0d1b2a;">Segnali Informativi</h2>
+      <p style="margin:0 0 10px 0;font-size:11px;color:#888;">
+        Tutti i ticker con direzione potenziale, livelli ATR e motivo del mancato trade.
+        I livelli per i ticker HOLD sono <em>informativi</em> — non operativi.
+        Click sul ticker per aprire la dashboard filtrata.
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0"
+             style="border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="background:#2a3d52;text-align:left;">
+            <th style="padding:6px 8px;font-weight:600;color:#a0b4c8;">Ticker</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Voti B/S/H</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Net Score</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">WC</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Azione</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Dir.</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Entry</th>
+            <th style="padding:6px 6px;font-weight:600;color:#e07070;">SL</th>
+            <th style="padding:6px 6px;font-weight:600;color:#70c070;">TP</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Size / R:R</th>
+            <th style="padding:6px 6px;font-weight:600;color:#a0b4c8;">Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {info_rows}
         </tbody>
       </table>
     </td>
@@ -305,12 +462,14 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str) -> str:
     </td>
   </tr>
 
-  <!-- Footer -->
+  <!-- Footer con link dashboard -->
   <tr>
     <td style="background:#0d1b2a;padding:16px 32px;">
       <p style="margin:0;color:#a0b4c8;font-size:11px;">
         Athanor Alpha · AI-generated report · For informational purposes only ·
         No positions are executed automatically · Generated {run_date} UTC
+        &nbsp;·&nbsp;
+        <a href="{DASHBOARD_URL}" style="color:#7eb8e8;">📊 Dashboard</a>
       </p>
     </td>
   </tr>
@@ -342,7 +501,7 @@ def build_plaintext(portfolio: dict, risk_report: dict, run_date: str) -> str:
         "",
         f"VaR 95%: {var*100:.1f}%  |  Max DD estimate: {max_dd*100:.1f}%",
         "",
-        "TRADE PLAN  (Entry=last close, SL=entry+-2xATR, TP=entry+-4xATR, Size=1% risk)",
+        "TRADE PLAN  (Entry=last close, SL=entry+-1xATR, TP=entry+-2xATR, Size=1% risk)",
         f"{'Ticker':<7} {'Dir':<5} {'Entry':>8}  {'SL':>8}  {'TP':>8}  {'Size$':>7}  {'R:R':<5}  Agents",
         "-" * 72,
     ]
@@ -369,6 +528,45 @@ def build_plaintext(portfolio: dict, risk_report: dict, run_date: str) -> str:
 
     lines += [
         "",
+        "SEGNALI INFORMATIVI (tutti i ticker)",
+        f"{'Ticker':<8} {'Azione':<6} {'Dir':<6} {'NetScore':>9}  {'Entry':>8}  {'SL':>8}  {'TP':>8}  Note",
+        "-" * 80,
+    ]
+    for rec in sorted(recs, key=lambda r: -abs(r.get("conviction", 0))):
+        t        = rec.get("ticker", "?")
+        action   = rec.get("action", "HOLD")
+        devil    = rec.get("devil_vetoed", False)
+        conv     = rec.get("conviction", 0.0)
+        net_s    = 0.0  # non disponibile nel plaintext senza weighted
+
+        if action in ("BUY", "SELL") and rec.get("entry_price") is not None:
+            e  = rec.get("entry_price")
+            sl = rec.get("stop_loss")
+            tp = rec.get("take_profit")
+            d  = "long" if action == "BUY" else "short"
+        else:
+            e  = rec.get("info_entry")
+            sl = rec.get("info_sl")
+            tp = rec.get("info_tp")
+            d  = rec.get("info_direction") or "—"
+
+        e_s  = f"${e:,.2f}"  if e  is not None else "—"
+        sl_s = f"${sl:,.2f}" if sl is not None else "—"
+        tp_s = f"${tp:,.2f}" if tp is not None else "—"
+
+        if action in ("BUY", "SELL"):
+            note = "trade attivo"
+        elif devil:
+            note = "DA veto"
+        elif conv < 0.30:
+            note = "bassa conviction"
+        else:
+            note = "consensus/soglia"
+
+        lines.append(f"{t:<8} {action:<6} {d:<6} {'—':>9}  {e_s:>8}  {sl_s:>8}  {tp_s:>8}  {note}")
+
+    lines += [
+        "",
         "ALL SIGNALS",
         f"{'Ticker':<8} {'Action':<6} {'Size':>6}  {'Conv':>5}  Reasoning",
         "-" * 72,
@@ -390,6 +588,7 @@ def build_plaintext(portfolio: dict, risk_report: dict, run_date: str) -> str:
 
     lines += [
         "",
+        f"Dashboard: {DASHBOARD_URL}",
         "─" * 60,
         "AI-generated report. No positions are executed automatically.",
     ]
@@ -400,11 +599,12 @@ def build_plaintext(portfolio: dict, risk_report: dict, run_date: str) -> str:
 # Send function
 # ══════════════════════════════════════════════════════════════════════════════
 
-def send_daily_report(portfolio: dict, risk_report: dict) -> bool:
+def send_daily_report(portfolio: dict, risk_report: dict, weighted: dict | None = None) -> bool:
     """
     Build and send the daily HTML report email.
     Returns True if sent successfully, False on error.
     Call this after portfolio_manager_agent completes.
+    weighted: dizionario {ticker: agg} da _weighted_signals, usato per i Segnali Informativi.
     """
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     n_long   = portfolio.get("n_long", 0)
@@ -417,7 +617,7 @@ def send_daily_report(portfolio: dict, risk_report: dict) -> bool:
         f"{n_long}L/{n_short}S — Risk: {risk_tag}"
     )
 
-    html_body  = build_html(portfolio, risk_report, run_date)
+    html_body  = build_html(portfolio, risk_report, run_date, weighted=weighted)
     plain_body = build_plaintext(portfolio, risk_report, run_date)
 
     msg = MIMEMultipart("alternative")
@@ -450,25 +650,50 @@ def send_daily_report(portfolio: dict, risk_report: dict) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # Minimal fake data for preview (includes trade levels from Phase 3.5)
     fake_portfolio = {
         "recommendations": [
             {"ticker": "AAPL", "action": "BUY",  "sizing_pct": 14.2, "conviction": 0.78,
-             "reasoning": "Strong multi-agent consensus with high fundamental score.",
+             "reasoning": "Strong multi-agent consensus with high fundamental score. WC=+0.021.",
              "entry_price": 172.50, "stop_loss": 168.30, "take_profit": 180.90,
-             "size_usd": 1294.0, "rr_ratio": 2.0, "consensus": "7/9 bullish"},
+             "size_usd": 1294.0, "rr_ratio": 2.0, "consensus": "7/9 bullish",
+             "weighted_conviction": 0.021, "devil_vetoed": False,
+             "info_entry": None, "info_sl": None, "info_tp": None,
+             "info_size_usd": None, "info_rr_ratio": None, "info_direction": None},
             {"ticker": "NVDA", "action": "BUY",  "sizing_pct": 11.5, "conviction": 0.65,
-             "reasoning": "Bullish technical regime with momentum confirmation.",
+             "reasoning": "Bullish technical regime with momentum confirmation. WC=+0.015.",
              "entry_price": 875.20, "stop_loss": 856.80, "take_profit": 912.00,
-             "size_usd": 954.0, "rr_ratio": 2.0, "consensus": "6/9 bullish"},
-            {"ticker": "JPM",  "action": "HOLD", "sizing_pct": 0.0,  "conviction": 0.30,
-             "reasoning": "Mixed signals; no clear edge detected.",
+             "size_usd": 954.0, "rr_ratio": 2.0, "consensus": "6/9 bullish",
+             "weighted_conviction": 0.015, "devil_vetoed": False,
+             "info_entry": None, "info_sl": None, "info_tp": None,
+             "info_size_usd": None, "info_rr_ratio": None, "info_direction": None},
+            {"ticker": "SOL-USD", "action": "HOLD", "sizing_pct": 0.0, "conviction": 0.26,
+             "reasoning": "Sotto soglia conviction MIN_CONVICTION_TO_TRADE=0.30. WC=+0.009.",
              "entry_price": None, "stop_loss": None, "take_profit": None,
-             "size_usd": None, "rr_ratio": None, "consensus": "9 agents / mixed"},
+             "size_usd": None, "rr_ratio": None, "consensus": "7/10 bullish",
+             "weighted_conviction": 0.009, "devil_vetoed": False,
+             "info_entry": 142.30, "info_sl": 138.10, "info_tp": 150.70,
+             "info_size_usd": 336.0, "info_rr_ratio": 2.0, "info_direction": "long"},
+            {"ticker": "MSTR", "action": "HOLD", "sizing_pct": 0.0, "conviction": 0.0,
+             "reasoning": "HOLD — vetoed by Devil's Advocate: VIX regime RISK_OFF.",
+             "entry_price": None, "stop_loss": None, "take_profit": None,
+             "size_usd": None, "rr_ratio": None, "consensus": "8 agents / mixed",
+             "weighted_conviction": 0.018, "devil_vetoed": True,
+             "info_entry": 385.00, "info_sl": 371.20, "info_tp": 412.60,
+             "info_size_usd": 541.0, "info_rr_ratio": 2.0, "info_direction": "long"},
+            {"ticker": "JPM",  "action": "HOLD", "sizing_pct": 0.0,  "conviction": 0.22,
+             "reasoning": "Mixed signals; no clear edge detected. WC=+0.002.",
+             "entry_price": None, "stop_loss": None, "take_profit": None,
+             "size_usd": None, "rr_ratio": None, "consensus": "9 agents / mixed",
+             "weighted_conviction": 0.002, "devil_vetoed": False,
+             "info_entry": None, "info_sl": None, "info_tp": None,
+             "info_size_usd": None, "info_rr_ratio": None, "info_direction": None},
             {"ticker": "TSLA", "action": "SELL", "sizing_pct": 6.0,  "conviction": 0.55,
-             "reasoning": "Bearish sentiment and weakening fundamentals.",
+             "reasoning": "Bearish sentiment and weakening fundamentals. WC=-0.014.",
              "entry_price": 245.00, "stop_loss": 253.80, "take_profit": 227.40,
-             "size_usd": 487.0, "rr_ratio": 2.0, "consensus": "6/9 bearish"},
+             "size_usd": 487.0, "rr_ratio": 2.0, "consensus": "6/9 bearish",
+             "weighted_conviction": -0.014, "devil_vetoed": False,
+             "info_entry": None, "info_sl": None, "info_tp": None,
+             "info_size_usd": None, "info_rr_ratio": None, "info_direction": None},
         ],
         "portfolio_summary": (
             "The portfolio is cautiously bullish, concentrated in Technology. "
@@ -477,7 +702,15 @@ if __name__ == "__main__":
         ),
         "risk_notes": "Sector concentration in Technology exceeds 50% of bullish signals.",
         "total_long_pct": 25.7,
-        "n_long": 2, "n_short": 1, "n_hold": 1,
+        "n_long": 2, "n_short": 1, "n_hold": 3,
+    }
+    fake_weighted = {
+        "AAPL":    {"net_score": 0.42, "bull_agents": ["a","b","c","d","e","f","g"], "bear_agents": [], "n_agents": 9},
+        "NVDA":    {"net_score": 0.35, "bull_agents": ["a","b","c","d","e","f"],     "bear_agents": [], "n_agents": 9},
+        "SOL-USD": {"net_score": 0.28, "bull_agents": ["a","b","c","d","e","f","g"], "bear_agents": [], "n_agents": 10},
+        "MSTR":    {"net_score": 0.31, "bull_agents": ["a","b","c","d","e","f","g","h"], "bear_agents": [], "n_agents": 8},
+        "JPM":     {"net_score": 0.08, "bull_agents": ["a","b"],                    "bear_agents": ["c"], "n_agents": 9},
+        "TSLA":    {"net_score": -0.33, "bull_agents": [],                           "bear_agents": ["a","b","c","d","e","f"], "n_agents": 9},
     }
     fake_risk = {
         "daily_var_95": 0.028,
@@ -487,7 +720,7 @@ if __name__ == "__main__":
     }
 
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    html = build_html(fake_portfolio, fake_risk, run_date)
+    html = build_html(fake_portfolio, fake_risk, run_date, weighted=fake_weighted)
 
     preview_path = "email_preview.html"
     with open(preview_path, "w", encoding="utf-8") as f:

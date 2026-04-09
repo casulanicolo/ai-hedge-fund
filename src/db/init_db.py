@@ -234,6 +234,132 @@ def finish_run(
 
 
 # ─────────────────────────────────────────────
+# CRUD — Portfolio Decisions  (Fase 3)
+# ─────────────────────────────────────────────
+
+def insert_portfolio_decision(
+    conn: sqlite3.Connection,
+    run_id: str,
+    timestamp: str,
+    rec: dict,
+    weighted: dict | None = None,
+) -> int:
+    """
+    Insert one row into portfolio_decisions from a pre_recs entry.
+
+    rec     – dizionario prodotto da _enrich_with_trade_levels
+    weighted – dizionario {ticker: agg} da _weighted_signals (opzionale)
+    Returns the new rowid.
+    """
+    weighted = weighted or {}
+    ticker   = rec.get("ticker", "")
+    agg      = weighted.get(ticker, {})
+
+    cur = conn.execute(
+        """
+        INSERT INTO portfolio_decisions (
+            run_id, timestamp, ticker, action,
+            net_score, avg_confidence, weighted_conviction, conviction,
+            sizing_pct, consensus,
+            entry_price, stop_loss, take_profit, size_usd, rr_ratio,
+            info_entry, info_sl, info_tp, info_size_usd, info_rr_ratio, info_direction,
+            devil_vetoed, reasoning
+        ) VALUES (
+            ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?,
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
+            ?, ?
+        )
+        """,
+        (
+            run_id,
+            timestamp,
+            ticker,
+            rec.get("action", "HOLD"),
+            # signal metrics
+            agg.get("net_score"),
+            agg.get("avg_confidence"),
+            rec.get("weighted_conviction"),
+            rec.get("conviction"),
+            rec.get("sizing_pct", 0.0),
+            rec.get("consensus"),
+            # livelli operativi
+            rec.get("entry_price"),
+            rec.get("stop_loss"),
+            rec.get("take_profit"),
+            rec.get("size_usd"),
+            rec.get("rr_ratio"),
+            # livelli informativi
+            rec.get("info_entry"),
+            rec.get("info_sl"),
+            rec.get("info_tp"),
+            rec.get("info_size_usd"),
+            rec.get("info_rr_ratio"),
+            rec.get("info_direction"),
+            # flag e reasoning
+            1 if rec.get("devil_vetoed") else 0,
+            rec.get("reasoning", ""),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_portfolio_decisions(
+    conn: sqlite3.Connection,
+    run_id: str | None = None,
+    ticker: str | None = None,
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    """
+    Fetch portfolio decisions, optionally filtered by run_id and/or ticker.
+    Returns rows sorted by timestamp DESC.
+    """
+    where_clauses = []
+    params: list = []
+
+    if run_id:
+        where_clauses.append("run_id = ?")
+        params.append(run_id)
+    if ticker:
+        where_clauses.append("ticker = ?")
+        params.append(ticker)
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    params.append(limit)
+
+    return conn.execute(
+        f"""
+        SELECT * FROM portfolio_decisions
+        {where_sql}
+        ORDER BY timestamp DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+
+def get_distinct_decision_runs(
+    conn: sqlite3.Connection,
+    limit: int = 30,
+) -> list[str]:
+    """Return the N most recent distinct run_ids that have portfolio_decisions."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT run_id, MAX(timestamp) as ts
+        FROM portfolio_decisions
+        GROUP BY run_id
+        ORDER BY ts DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [r["run_id"] for r in rows]
+
+
+# ─────────────────────────────────────────────
 # CLI entrypoint
 # ─────────────────────────────────────────────
 

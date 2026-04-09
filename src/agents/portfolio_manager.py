@@ -44,6 +44,9 @@ MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "3"))
 
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
 
+# ── Threshold per livelli informativi su HOLD ─────────────────────────────────
+INFO_NET_SCORE_THRESHOLD = 0.10   # |net_score| minimo per mostrare livelli info su HOLD
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Pydantic output model
@@ -568,6 +571,7 @@ def _enrich_with_trade_levels(
         else:
             rec["consensus"] = f"{n} agents / mixed"
 
+        # ── Livelli operativi per BUY/SELL ────────────────────────────────
         levels = trade_levels.get(ticker) if action in ("BUY", "SELL") else None
 
         if levels:
@@ -590,12 +594,75 @@ def _enrich_with_trade_levels(
             rec["take_profit"] = tp
             rec["size_usd"]    = size_usd
             rec["rr_ratio"]    = rr
+            # Nessun livello informativo per trade attivi
+            rec["info_entry"]     = None
+            rec["info_sl"]        = None
+            rec["info_tp"]        = None
+            rec["info_size_usd"]  = None
+            rec["info_rr_ratio"]  = None
+            rec["info_direction"] = None
+            rec["devil_vetoed"]   = False
+
         else:
+            # ── Livelli operativi: nessuno (HOLD o vetato) ────────────────
             rec["entry_price"] = None
             rec["stop_loss"]   = None
             rec["take_profit"] = None
             rec["size_usd"]    = None
             rec["rr_ratio"]    = None
+
+            # ── Livelli informativi: calcolati se segnale abbastanza forte ─
+            net_score     = agg.get("net_score", 0.0)
+            devil_vetoed  = rec.get("reasoning", "").startswith("HOLD — vetoed")
+
+            rec["devil_vetoed"] = devil_vetoed
+
+            # Cerca i livelli nel risk_report anche per ticker HOLD/vetati:
+            # il risk_manager calcola trade_levels solo per bullish_approved + bearish,
+            # ma se net_signal è bullish/bearish il ticker potrebbe averli.
+            # In alternativa li calcoliamo direttamente dai dati nel risk_report signal_summary.
+            info_levels = trade_levels.get(ticker)  # potrebbe esserci se era bullish/bearish
+
+            if info_levels and abs(net_score) >= INFO_NET_SCORE_THRESHOLD:
+                i_entry = info_levels["entry_price"]
+                i_sl    = info_levels["stop_loss"]
+                i_tp    = info_levels["take_profit"]
+                i_rr    = info_levels["rr_ratio"]
+                i_dir   = info_levels["direction"]
+
+                risk_per_share = abs(i_entry - i_sl)
+                risk_amount    = PORTFOLIO_SIZE_USD * RISK_PER_TRADE_PCT
+
+                if risk_per_share > 0:
+                    shares       = floor(risk_amount / risk_per_share)
+                    i_size_usd   = round(min(shares * i_entry, max_position_usd), 0)
+                else:
+                    i_size_usd = 0.0
+
+                rec["info_entry"]     = i_entry
+                rec["info_sl"]        = i_sl
+                rec["info_tp"]        = i_tp
+                rec["info_size_usd"]  = i_size_usd
+                rec["info_rr_ratio"]  = i_rr
+                rec["info_direction"] = i_dir
+            elif abs(net_score) >= INFO_NET_SCORE_THRESHOLD:
+                # net_score significativo ma nessun trade_level nel risk_report
+                # (es. ticker escluso dal sector cap prima del calcolo ATR).
+                # Proviamo a ricavare la direzione dal net_score.
+                rec["info_entry"]     = None
+                rec["info_sl"]        = None
+                rec["info_tp"]        = None
+                rec["info_size_usd"]  = None
+                rec["info_rr_ratio"]  = None
+                rec["info_direction"] = "long" if net_score > 0 else "short"
+            else:
+                # Segnale troppo debole: nessun livello informativo
+                rec["info_entry"]     = None
+                rec["info_sl"]        = None
+                rec["info_tp"]        = None
+                rec["info_size_usd"]  = None
+                rec["info_rr_ratio"]  = None
+                rec["info_direction"] = None
 
     return pre_recs
 
@@ -837,7 +904,21 @@ def portfolio_manager_agent(state: AgentState) -> dict:
                     f"action {rec['action']} at {rec['sizing_pct']}%."
                 )
 
-    # 5. Build output
+    # 5. Salva decisioni in SQLite (portfolio_decisions)
+    try:
+        from src.db.init_db import get_connection, insert_portfolio_decision
+        from datetime import datetime, timezone
+        _ts   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _rid  = data.get("run_id", "unknown")
+        _conn = get_connection()
+        for rec in pre_recs:
+            insert_portfolio_decision(_conn, _rid, _ts, rec, weighted)
+        _conn.close()
+        progress.update_status(AGENT_ID, None, f"Saved {len(pre_recs)} decisions to DB")
+    except Exception as _e:
+        _pm_log.warning("[portfolio_manager] Failed to save portfolio_decisions: %s", _e)
+
+    # 6. Build output
     portfolio_recommendations = {
         "recommendations":   pre_recs,
         "portfolio_summary": portfolio_summary,
