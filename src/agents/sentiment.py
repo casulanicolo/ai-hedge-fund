@@ -88,7 +88,7 @@ class SentimentSignal(BaseModel):
         description="Trading direction based on sentiment: LONG, SHORT, or NEUTRAL."
     )
     expected_return: float = Field(
-        ge=-0.10, le=0.10,
+        ge=-1.0, le=1.0,
         description="Realistic return estimate for a 3-4 day swing trade. E.g. 0.02 = +2%."
     )
     confidence: float = Field(

@@ -369,7 +369,7 @@ def get_atr(state: dict, ticker: str, period: int = 14) -> float:
             )
             return DEFAULT_ATR
 
-        logger.info("get_atr: %s ATR(%d)=%%.4f prezzo=%.2f ATR%%=%.4f",
+        logger.info("get_atr: %s ATR(%d)=%.4f prezzo=%.2f ATR%%=%.4f",
                     ticker, period, atr_value, close_price, atr_pct)
         return atr_pct
 

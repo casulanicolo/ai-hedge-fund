@@ -389,7 +389,12 @@ def _aggregate_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]
             if not isinstance(sig_data, dict):
                 continue
 
-            signal = str(sig_data.get("signal", "neutral")).lower()
+            direction  = sig_data.get("direction")
+            signal_raw = sig_data.get("signal", "neutral")
+            if direction:
+                signal = "bullish" if direction == "LONG" else ("bearish" if direction == "SHORT" else "neutral")
+            else:
+                signal = str(signal_raw).lower()
             confidence = float(sig_data.get("confidence", 0.5))
 
             if signal == "bullish":
