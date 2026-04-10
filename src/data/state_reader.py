@@ -412,7 +412,7 @@ def get_insider_transactions(state: dict, ticker: str) -> list:
     Returns empty list if unavailable.
     """
     sec = get_sec_filings(state, ticker)
-    return sec.get("filings_form4") or []
+    return sec.get("form4") or []
 
 
 def get_recent_8k(state: dict, ticker: str) -> list:
@@ -421,7 +421,7 @@ def get_recent_8k(state: dict, ticker: str) -> list:
     Returns empty list if unavailable.
     """
     sec = get_sec_filings(state, ticker)
-    return sec.get("filings_8k") or []
+    return sec.get("8-K") or []
 
 
 # ---------------------------------------------------------------------------
