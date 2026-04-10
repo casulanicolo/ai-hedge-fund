@@ -189,7 +189,7 @@ def _fetch_8k_events(ticker: str, state: AgentState) -> list[dict[str, Any]]:
     try:
         prefetched  = state.get("data", {}).get("prefetched_data", {})
         ticker_data = prefetched.get(ticker, {})
-        sec_data    = ticker_data.get("sec", {})
+        sec_data    = ticker_data.get("sec_filings", {})
         filings_8k  = sec_data.get("8-K", []) or []
 
         cutoff = datetime.now(tz=timezone.utc) - timedelta(days=NEWS_LOOKBACK_DAYS * 4)
