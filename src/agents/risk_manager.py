@@ -601,7 +601,7 @@ def risk_manager_agent(state: AgentState) -> dict:
 
     # ── 13. Write to state ─────────────────────────────────────────────────────
     data["risk_report"] = risk_report
-    data["analyst_signals"][AGENT_ID] = {
+    data.setdefault("analyst_signals", {})[AGENT_ID] = {
         "signal": "neutral",
         "confidence": 1.0,
         "reasoning": (
