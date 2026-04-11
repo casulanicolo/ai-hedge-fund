@@ -1,6 +1,7 @@
 # src/agents/fundamentals.py
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pandas as pd
@@ -11,6 +12,8 @@ from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 from src.utils.trade_levels import compute_trade_levels
+
+logger = logging.getLogger(__name__)
 
 
 # ── Data loader ──────────────────────────────────────────────────────────────
@@ -294,6 +297,12 @@ Respond in JSON format.
             progress.update_status(agent_id, ticker, "Done")
 
         except Exception as e:
+            logger.error(
+                "fundamentals_analyst_agent | ticker=%s | %s",
+                ticker,
+                e,
+                exc_info=True,
+            )
             progress.update_status(agent_id, ticker, f"Error: {e}")
             fundamental_analysis[ticker] = {
                 "direction":       "NEUTRAL",
