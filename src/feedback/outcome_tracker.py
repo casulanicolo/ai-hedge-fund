@@ -257,7 +257,11 @@ def write_outcome(
 # ─────────────────────────────────────────────
 
 def compute_agent_stats(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Statistiche per agente sulla finestra 1d (esclude HOLD dal hit rate)."""
+    """Statistiche per agente sulla finestra 1d (esclude HOLD dal hit rate).
+
+    W9 fix: sostituisce .groupby().apply(pd.Series) — deprecato in pandas >= 2.2 —
+    con un loop esplicito su groupby, compatibile con tutte le versioni.
+    """
     query = """
         SELECT p.agent_id, p.ticker, p.signal, o.actual_return_1d
         FROM predictions p
@@ -285,19 +289,35 @@ def compute_agent_stats(conn: sqlite3.Connection) -> pd.DataFrame:
     if df_eval.empty:
         return pd.DataFrame()
 
-    stats = (
-        df_eval.groupby("agent_id")
-        .apply(lambda g: pd.Series({
-            "total":             len(g),
-            "hit_rate":          g["correct"].mean(),
-            "avg_return_correct": g.loc[g["correct"] == True,  "return"].mean()
-                                  if g["correct"].any()   else float("nan"),
-            "avg_loss_wrong":    g.loc[g["correct"] == False, "return"].mean()
-                                  if (~g["correct"]).any() else float("nan"),
-        }))
-        .reset_index()
-    )
-    return stats
+    # ── W9 fix: loop esplicito invece di .apply(lambda g: pd.Series({...})) ──
+    stat_rows = []
+    for agent_id, group in df_eval.groupby("agent_id"):
+        total     = len(group)
+        hit_rate  = group["correct"].mean()
+
+        correct_mask = group["correct"] == True
+        wrong_mask   = group["correct"] == False
+
+        avg_return_correct = (
+            group.loc[correct_mask, "return"].mean()
+            if correct_mask.any()
+            else float("nan")
+        )
+        avg_loss_wrong = (
+            group.loc[wrong_mask, "return"].mean()
+            if wrong_mask.any()
+            else float("nan")
+        )
+
+        stat_rows.append({
+            "agent_id":           agent_id,
+            "total":              total,
+            "hit_rate":           hit_rate,
+            "avg_return_correct": avg_return_correct,
+            "avg_loss_wrong":     avg_loss_wrong,
+        })
+
+    return pd.DataFrame(stat_rows)
 
 
 # ─────────────────────────────────────────────
