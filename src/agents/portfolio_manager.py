@@ -297,8 +297,20 @@ def _load_risk_params() -> dict:
             loaded = yaml.safe_load(f)
         if isinstance(loaded, dict):
             defaults.update(loaded)
-    except Exception:
-        pass
+    except FileNotFoundError:
+        # File assente è normale in ambienti senza config personalizzata —
+        # log a DEBUG per non inquinare l'output del run.
+        import logging as _log
+        _log.getLogger(__name__).debug(
+            "[portfolio_manager] config/risk_params.yaml non trovato — uso valori di default."
+        )
+    except Exception as e:
+        # Errori inattesi (YAML malformato, permessi, ecc.) vengono loggati
+        # come WARNING in modo che il problema sia visibile nei log del VPS.
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "[portfolio_manager] Errore nel caricamento di risk_params.yaml: %s — uso valori di default.", e
+        )
     return defaults
 
 
