@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 """
 
+# ── W11 fix: module-level flag — migrations run only once per process ─────────
+# _get_connection() is called on every pipeline run and every query_last_run()
+# call. Without this flag, the 4 ALTER TABLE statements were attempted (and
+# silently swallowed) on every single invocation, adding unnecessary overhead
+# and noise. The flag is set to True after the first successful migration run
+# and never reset, so subsequent calls skip the migration block entirely.
+_schema_migrated: bool = False
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _hash_reasoning(text: str) -> str:
@@ -56,22 +65,30 @@ def _now_utc() -> str:
 
 
 def _get_connection() -> sqlite3.Connection:
+    global _schema_migrated
+
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute(_CREATE_TABLE_SQL)
-    # Add columns to existing DBs that don't have them yet (idempotent)
-    for migration in (
-        "ALTER TABLE predictions ADD COLUMN expected_return REAL NOT NULL DEFAULT 0.0",
-        "ALTER TABLE predictions ADD COLUMN entry_price  REAL",
-        "ALTER TABLE predictions ADD COLUMN stop_loss    REAL",
-        "ALTER TABLE predictions ADD COLUMN take_profit  REAL",
-    ):
-        try:
-            conn.execute(migration)
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+
+    # W11 fix: run ALTER TABLE migrations only once per process lifetime.
+    # On the first call _schema_migrated is False, so we run them and set the
+    # flag. Every subsequent call skips this block entirely.
+    if not _schema_migrated:
+        for migration in (
+            "ALTER TABLE predictions ADD COLUMN expected_return REAL NOT NULL DEFAULT 0.0",
+            "ALTER TABLE predictions ADD COLUMN entry_price  REAL",
+            "ALTER TABLE predictions ADD COLUMN stop_loss    REAL",
+            "ALTER TABLE predictions ADD COLUMN take_profit  REAL",
+        ):
+            try:
+                conn.execute(migration)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists — safe to ignore
+        _schema_migrated = True
+
     return conn
 
 
