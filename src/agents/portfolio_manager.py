@@ -10,6 +10,7 @@ No execution – output only. Writes to state["data"]["portfolio_recommendations
 from __future__ import annotations
 
 import json
+import logging
 import os
 from math import floor
 from typing import Any
@@ -22,6 +23,7 @@ from src.utils.llm import call_llm
 from src.utils.progress import progress
 
 AGENT_ID = "portfolio_manager"
+logger = logging.getLogger(__name__)
 
 # ── Sizing parameters ────────────────────────────────────────────────────────
 MAX_SINGLE_POSITION   = 20.0
@@ -300,15 +302,13 @@ def _load_risk_params() -> dict:
     except FileNotFoundError:
         # File assente è normale in ambienti senza config personalizzata —
         # log a DEBUG per non inquinare l'output del run.
-        import logging as _log
-        _log.getLogger(__name__).debug(
+        logger.debug(
             "[portfolio_manager] config/risk_params.yaml non trovato — uso valori di default."
         )
     except Exception as e:
         # Errori inattesi (YAML malformato, permessi, ecc.) vengono loggati
         # come WARNING in modo che il problema sia visibile nei log del VPS.
-        import logging as _log
-        _log.getLogger(__name__).warning(
+        logger.warning(
             "[portfolio_manager] Errore nel caricamento di risk_params.yaml: %s — uso valori di default.", e
         )
     return defaults
@@ -407,9 +407,6 @@ def _compute_sizing(
       - half_kelly_size:   basato su conviction e reward/risk (qualità segnale)
     Entrambi i valori sono in percentuale del portafoglio (0-100).
     """
-    import logging
-    log = logging.getLogger(__name__)
-
     net_score  = agg.get("net_score", 0.0)
     avg_conf   = agg.get("avg_confidence", 0.5)
     net_signal = agg.get("net_signal", "neutral")
@@ -463,7 +460,7 @@ def _compute_sizing(
     #    Converte da [0,1] a [0,100] per coerenza con il resto del PM
     dynamic_sizing_pct = min(vol_size, kelly_size) * 100.0
 
-    log.info(
+    logger.info(
         "_compute_sizing %s: ATR%%=%.3f vol_size=%.1f%% kelly_size=%.1f%% → final=%.1f%%",
         ticker, atr_pct, vol_size * 100, kelly_size * 100, dynamic_sizing_pct,
     )
@@ -801,8 +798,6 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         progress.update_status(AGENT_ID, None, f"Trovate {len(open_positions)} posizioni aperte")
 
     # -- Fase 3: leggi output Devil's Advocate --------------------------------
-    import logging as _logging
-    _pm_log = _logging.getLogger(__name__)
     da_output: dict      = data.get("devils_advocate_output", {})
     da_vetoed: list[str] = da_output.get("vetoed_tickers", [])
     da_multiplier: float = float(da_output.get("size_multiplier", 1.0))
@@ -835,7 +830,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         # -- Fase 3: applica veto ---------------------------------------------
         if ticker in da_vetoed:
             veto_reason = da_veto_reasons.get(ticker, "vetoed by Devil's Advocate")
-            _pm_log.warning(
+            logger.warning(
                 "[portfolio_manager] %s: action overridden to HOLD (%s)", ticker, veto_reason
             )
             pre_recs.append({
@@ -856,7 +851,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         if action in ("BUY", "SELL") and da_multiplier < 1.0:
             sizing_before = sizing
             sizing = round(sizing * da_multiplier, 1)
-            _pm_log.info(
+            logger.info(
                 "[portfolio_manager] %s: sizing %.1f%% -> %.1f%% (DA multiplier=%.2f, VIX=%.1f %s)",
                 ticker, sizing_before, sizing, da_multiplier, da_vix, da_regime,
             )
@@ -928,7 +923,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         _conn.close()
         progress.update_status(AGENT_ID, None, f"Saved {len(pre_recs)} decisions to DB")
     except Exception as _e:
-        _pm_log.warning("[portfolio_manager] Failed to save portfolio_decisions: %s", _e)
+        logger.warning("[portfolio_manager] Failed to save portfolio_decisions: %s", _e)
 
     # 6. Build output
     portfolio_recommendations = {
