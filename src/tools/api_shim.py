@@ -217,7 +217,11 @@ def get_financial_metrics(
     if state is None:
         logger.warning("api_shim: state not registered for ticker '%s'", ticker)
         return []
-    return [_build_financial_metrics(state, ticker)]
+    try:
+        return [_build_financial_metrics(state, ticker)]
+    except Exception as e:
+        logger.error("api_shim.get_financial_metrics | ticker=%s | %s", ticker, e, exc_info=True)
+        return []
 
 
 def get_market_cap(
@@ -228,7 +232,11 @@ def get_market_cap(
     state = _get_state()
     if state is None:
         return None
-    return _get_market_cap(state, ticker)
+    try:
+        return _get_market_cap(state, ticker)
+    except Exception as e:
+        logger.error("api_shim.get_market_cap | ticker=%s | %s", ticker, e, exc_info=True)
+        return None
 
 
 def search_line_items(
@@ -243,7 +251,11 @@ def search_line_items(
     if state is None:
         logger.warning("api_shim: state not registered for ticker '%s'", ticker)
         return []
-    return [_build_line_item(state, ticker, line_items)]
+    try:
+        return [_build_line_item(state, ticker, line_items)]
+    except Exception as e:
+        logger.error("api_shim.search_line_items | ticker=%s | %s", ticker, e, exc_info=True)
+        return []
 
 
 def get_prices(
@@ -255,7 +267,11 @@ def get_prices(
     state = _get_state()
     if state is None:
         return None
-    return get_ohlcv_daily(state, ticker)
+    try:
+        return get_ohlcv_daily(state, ticker)
+    except Exception as e:
+        logger.error("api_shim.get_prices | ticker=%s | %s", ticker, e, exc_info=True)
+        return None
 
 
 def prices_to_df(prices) -> pd.DataFrame:
