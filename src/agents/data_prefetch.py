@@ -41,21 +41,35 @@ def data_prefetch_agent(state: AgentState) -> dict[str, Any]:
 
     # ── 1. Market data (yfinance) ─────────────────────────────────────────
     prefetcher = DataPrefetcher.get_instance()
-    prefetched = prefetcher.fetch_all(tickers)
-
-    logger.info(
-        "data_prefetch_agent: yfinance complete — %d/%d tickers successful",
-        len(prefetched), len(tickers),
-    )
+    try:
+        prefetched = prefetcher.fetch_all(tickers)
+        logger.info(
+            "data_prefetch_agent: yfinance complete — %d/%d tickers successful",
+            len(prefetched), len(tickers),
+        )
+    except Exception as e:
+        logger.error(
+            "data_prefetch_agent: fetch_all (yfinance) fallito per tutti i ticker — %s. "
+            "La pipeline continua con dati di mercato vuoti.",
+            e, exc_info=True,
+        )
+        prefetched = {}
 
     # ── 2. SEC EDGAR filings ──────────────────────────────────────────────
     sec_fetcher = SECFetcher()
-    sec_data = sec_fetcher.fetch_all(tickers)
-
-    logger.info(
-        "data_prefetch_agent: SEC EDGAR complete — %d/%d tickers fetched",
-        len(sec_data), len(tickers),
-    )
+    try:
+        sec_data = sec_fetcher.fetch_all(tickers)
+        logger.info(
+            "data_prefetch_agent: SEC EDGAR complete — %d/%d tickers fetched",
+            len(sec_data), len(tickers),
+        )
+    except Exception as e:
+        logger.warning(
+            "data_prefetch_agent: fetch_all (SEC EDGAR) fallito — %s. "
+            "La pipeline continua senza dati SEC.",
+            e, exc_info=True,
+        )
+        sec_data = {}
 
     # ── 3. Merge SEC data into each ticker's payload ──────────────────────
     for ticker in tickers:
