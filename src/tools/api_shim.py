@@ -277,6 +277,10 @@ def get_prices(
 def prices_to_df(prices) -> pd.DataFrame:
     if isinstance(prices, pd.DataFrame):
         return prices
+    logger.warning(
+        "prices_to_df: expected DataFrame, got %s — returning empty DataFrame",
+        type(prices).__name__,
+    )
     return pd.DataFrame()
 
 
