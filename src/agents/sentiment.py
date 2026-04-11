@@ -20,6 +20,7 @@ Output written to state["data"]["analyst_signals"]["sentiment_agent"]:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -31,6 +32,8 @@ from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 from src.utils.trade_levels import compute_trade_levels
+
+logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────
 # Constants
@@ -199,23 +202,17 @@ def _fetch_8k_events(ticker: str, state: AgentState) -> list[dict[str, Any]]:
             try:
                 filed_dt = datetime.strptime(filed_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
             except ValueError:
-                filed_dt = datetime.now(tz=timezone.utc)
-
+                continue
             if filed_dt < cutoff:
                 continue
-
-            description = (
-                filing.get("primaryDocDescription")
-                or filing.get("description")
-                or filing.get("form")
-                or "8-K Material Event"
-            )
+            title   = filing.get("form", "8-K") + ": " + (filing.get("description") or filing.get("items") or "Material event")
+            summary = filing.get("description") or filing.get("items") or ""
             events.append({
-                "title":         f"8-K: {description}",
-                "summary":       filing.get("items") or "",
+                "title":         title,
+                "summary":       summary,
                 "published_utc": filed_dt.isoformat(),
                 "source":        "SEC EDGAR",
-                "url":           filing.get("url") or "",
+                "url":           filing.get("linkToFilingDetails") or "",
             })
         return events
     except Exception:
@@ -293,50 +290,51 @@ def sentiment_agent(state: AgentState) -> dict[str, Any]:
         data["current_ticker"] = ticker
         progress.update_status(AGENT_ID, ticker, "fetching news")
 
-        # 1. Collect raw items
-        yf_items  = _fetch_yf_news(ticker)
-        sec_items = _fetch_8k_events(ticker, state)
-        all_items = yf_items + sec_items
+        try:
+            # 1. Collect raw items
+            yf_items  = _fetch_yf_news(ticker)
+            sec_items = _fetch_8k_events(ticker, state)
+            all_items = yf_items + sec_items
 
-        if not all_items:
-            progress.update_status(AGENT_ID, ticker, "no news found → neutral")
-            _neutral_levels = compute_trade_levels("NEUTRAL", state, ticker)
-            analyst_signals[AGENT_ID][ticker] = {
-                "direction":       "NEUTRAL",
-                "expected_return": 0.0,
-                "confidence":      0.1,
-                "sentiment_score": 0.0,
-                "event_type":      "other",
-                "urgency":         "low",
-                "reasoning":       "No recent news or filings found. Defaulting to neutral.",
-                **_neutral_levels,
-            }
-            continue
-
-        # 2. Heuristic scoring
-        progress.update_status(AGENT_ID, ticker, "scoring sentiment")
-        heuristic_score, dominant_event, dominant_urgency, annotated = _score_items(all_items)
-
-        # 3. Build LLM prompt
-        progress.update_status(AGENT_ID, ticker, "asking LLM")
-        top_items = sorted(annotated, key=lambda x: URGENCY_WEIGHTS[x["urgency"]], reverse=True)[:8]
-        items_json = json.dumps(
-            [
-                {
-                    "title":         it["title"],
-                    "summary":       it["summary"][:300] if it["summary"] else "",
-                    "published_utc": it["published_utc"],
-                    "source":        it["source"],
-                    "event_type":    it["event_type"],
-                    "urgency":       it["urgency"],
-                    "raw_score":     it["raw_score"],
+            if not all_items:
+                progress.update_status(AGENT_ID, ticker, "no news found → neutral")
+                _neutral_levels = compute_trade_levels("NEUTRAL", state, ticker)
+                analyst_signals[AGENT_ID][ticker] = {
+                    "direction":       "NEUTRAL",
+                    "expected_return": 0.0,
+                    "confidence":      0.1,
+                    "sentiment_score": 0.0,
+                    "event_type":      "other",
+                    "urgency":         "low",
+                    "reasoning":       "No recent news or filings found. Defaulting to neutral.",
+                    **_neutral_levels,
                 }
-                for it in top_items
-            ],
-            indent=2,
-        )
+                continue
 
-        prompt = f"""You are an expert financial sentiment analyst evaluating {ticker} for a 3-4 day swing trade.
+            # 2. Heuristic scoring
+            progress.update_status(AGENT_ID, ticker, "scoring sentiment")
+            heuristic_score, dominant_event, dominant_urgency, annotated = _score_items(all_items)
+
+            # 3. Build LLM prompt
+            progress.update_status(AGENT_ID, ticker, "asking LLM")
+            top_items = sorted(annotated, key=lambda x: URGENCY_WEIGHTS[x["urgency"]], reverse=True)[:8]
+            items_json = json.dumps(
+                [
+                    {
+                        "title":         it["title"],
+                        "summary":       it["summary"][:300] if it["summary"] else "",
+                        "published_utc": it["published_utc"],
+                        "source":        it["source"],
+                        "event_type":    it["event_type"],
+                        "urgency":       it["urgency"],
+                        "raw_score":     it["raw_score"],
+                    }
+                    for it in top_items
+                ],
+                indent=2,
+            )
+
+            prompt = f"""You are an expert financial sentiment analyst evaluating {ticker} for a 3-4 day swing trade.
 
 Analysis date: {datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")}
 Heuristic sentiment score (keyword-based, -1 to +1): {heuristic_score}
@@ -367,54 +365,74 @@ Return ONLY a valid JSON object matching this schema – no extra text:
 }}
 """
 
-        # 4. Call LLM
-        result: SentimentSignal | None = call_llm(
-            prompt=prompt,
-            pydantic_model=SentimentSignal,
-            agent_name=AGENT_ID,
-            state=state,
-        )
+            # 4. Call LLM
+            result: SentimentSignal | None = call_llm(
+                prompt=prompt,
+                pydantic_model=SentimentSignal,
+                agent_name=AGENT_ID,
+                state=state,
+            )
 
-        if result is None:
-            if heuristic_score > 0.15:
-                direction = "LONG"
-                expected_return = round(heuristic_score * 0.05, 4)
-            elif heuristic_score < -0.15:
-                direction = "SHORT"
-                expected_return = round(heuristic_score * 0.05, 4)
+            if result is None:
+                if heuristic_score > 0.15:
+                    direction = "LONG"
+                    expected_return = round(heuristic_score * 0.05, 4)
+                elif heuristic_score < -0.15:
+                    direction = "SHORT"
+                    expected_return = round(heuristic_score * 0.05, 4)
+                else:
+                    direction = "NEUTRAL"
+                    expected_return = 0.0
+
+                _levels = compute_trade_levels(direction, state, ticker)
+                analyst_signals[AGENT_ID][ticker] = {
+                    "direction":       direction,
+                    "expected_return": expected_return,
+                    "confidence":      0.1,
+                    "sentiment_score": heuristic_score,
+                    "event_type":      dominant_event,
+                    "urgency":         dominant_urgency,
+                    "reasoning":       "LLM call failed. Using keyword heuristic fallback.",
+                    **_levels,
+                }
             else:
-                direction = "NEUTRAL"
-                expected_return = 0.0
+                _levels = compute_trade_levels(result.direction, state, ticker)
+                analyst_signals[AGENT_ID][ticker] = {
+                    "direction":       result.direction,
+                    "expected_return": result.expected_return,
+                    "confidence":      result.confidence,
+                    "sentiment_score": result.sentiment_score,
+                    "event_type":      result.event_type,
+                    "urgency":         result.urgency,
+                    "reasoning":       result.reasoning,
+                    **_levels,
+                }
 
-            _levels = compute_trade_levels(direction, state, ticker)
+            sig = analyst_signals[AGENT_ID][ticker]
+            progress.update_status(
+                AGENT_ID, ticker,
+                f"{sig['direction']} er={sig['expected_return']:+.3f} conf={sig['confidence']:.2f} urgency={sig['urgency']}",
+            )
+
+        except Exception as e:
+            logger.error(
+                "sentiment_agent | ticker=%s | %s",
+                ticker,
+                e,
+                exc_info=True,
+            )
+            progress.update_status(AGENT_ID, ticker, f"Error: {e}")
+            _err_levels = compute_trade_levels("NEUTRAL", state, ticker)
             analyst_signals[AGENT_ID][ticker] = {
-                "direction":       direction,
-                "expected_return": expected_return,
+                "direction":       "NEUTRAL",
+                "expected_return": 0.0,
                 "confidence":      0.1,
-                "sentiment_score": heuristic_score,
-                "event_type":      dominant_event,
-                "urgency":         dominant_urgency,
-                "reasoning":       "LLM call failed. Using keyword heuristic fallback.",
-                **_levels,
+                "sentiment_score": 0.0,
+                "event_type":      "other",
+                "urgency":         "low",
+                "reasoning":       f"Error during sentiment analysis: {e}",
+                **_err_levels,
             }
-        else:
-            _levels = compute_trade_levels(result.direction, state, ticker)
-            analyst_signals[AGENT_ID][ticker] = {
-                "direction":       result.direction,
-                "expected_return": result.expected_return,
-                "confidence":      result.confidence,
-                "sentiment_score": result.sentiment_score,
-                "event_type":      result.event_type,
-                "urgency":         result.urgency,
-                "reasoning":       result.reasoning,
-                **_levels,
-            }
-
-        sig = analyst_signals[AGENT_ID][ticker]
-        progress.update_status(
-            AGENT_ID, ticker,
-            f"{sig['direction']} er={sig['expected_return']:+.3f} conf={sig['confidence']:.2f} urgency={sig['urgency']}",
-        )
 
     # 5. Emit LangGraph message
     show_agent_reasoning(analyst_signals[AGENT_ID], AGENT_ID)
