@@ -1,4 +1,7 @@
 import sys
+import logging
+import traceback
+from datetime import datetime
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -17,7 +20,6 @@ from src.cli.input import (
 )
 
 import argparse
-from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import json
 
@@ -25,6 +27,13 @@ import json
 load_dotenv()
 
 init(autoreset=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 def parse_hedge_fund_response(response):
@@ -131,49 +140,63 @@ def create_workflow(selected_analysts=None):
 
 
 if __name__ == "__main__":
-    inputs = parse_cli_inputs(
-        description="Run the hedge fund trading system",
-        require_tickers=True,
-        default_months_back=None,
-        include_graph_flag=True,
-        include_reasoning_flag=True,
-    )
+    run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    logger.info("Athanor Alpha starting | run_id=%s", run_id)
 
-    tickers = inputs.tickers
-    selected_analysts = inputs.selected_analysts
+    try:
+        inputs = parse_cli_inputs(
+            description="Run the hedge fund trading system",
+            require_tickers=True,
+            default_months_back=None,
+            include_graph_flag=True,
+            include_reasoning_flag=True,
+        )
 
-    # Construct portfolio here
-    portfolio = {
-        "cash": inputs.initial_cash,
-        "margin_requirement": inputs.margin_requirement,
-        "margin_used": 0.0,
-        "positions": {
-            ticker: {
-                "long": 0,
-                "short": 0,
-                "long_cost_basis": 0.0,
-                "short_cost_basis": 0.0,
-                "short_margin_used": 0.0,
-            }
-            for ticker in tickers
-        },
-        "realized_gains": {
-            ticker: {
-                "long": 0.0,
-                "short": 0.0,
-            }
-            for ticker in tickers
-        },
-    }
+        tickers = inputs.tickers
+        selected_analysts = inputs.selected_analysts
 
-    result = run_hedge_fund(
-        tickers=tickers,
-        start_date=inputs.start_date,
-        end_date=inputs.end_date,
-        portfolio=portfolio,
-        show_reasoning=inputs.show_reasoning,
-        selected_analysts=inputs.selected_analysts,
-        model_name=inputs.model_name,
-        model_provider=inputs.model_provider,
-    )
-    print_trading_output(result)
+        # Construct portfolio here
+        portfolio = {
+            "cash": inputs.initial_cash,
+            "margin_requirement": inputs.margin_requirement,
+            "margin_used": 0.0,
+            "positions": {
+                ticker: {
+                    "long": 0,
+                    "short": 0,
+                    "long_cost_basis": 0.0,
+                    "short_cost_basis": 0.0,
+                    "short_margin_used": 0.0,
+                }
+                for ticker in tickers
+            },
+            "realized_gains": {
+                ticker: {
+                    "long": 0.0,
+                    "short": 0.0,
+                }
+                for ticker in tickers
+            },
+        }
+
+        result = run_hedge_fund(
+            tickers=tickers,
+            start_date=inputs.start_date,
+            end_date=inputs.end_date,
+            portfolio=portfolio,
+            show_reasoning=inputs.show_reasoning,
+            selected_analysts=inputs.selected_analysts,
+            model_name=inputs.model_name,
+            model_provider=inputs.model_provider,
+        )
+        print_trading_output(result)
+        logger.info("Athanor Alpha completed successfully | run_id=%s", run_id)
+
+    except Exception as e:
+        logger.critical(
+            "Athanor Alpha FATAL ERROR | run_id=%s | %s\n%s",
+            run_id,
+            e,
+            traceback.format_exc(),
+        )
+        sys.exit(1)
