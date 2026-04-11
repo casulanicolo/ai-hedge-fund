@@ -61,6 +61,9 @@ ACTIVE_TICKERS = {
 def _get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # W10 fix: enable WAL mode so readers don't block writers and vice-versa.
+    # Without WAL, a crash mid-run could leave the DB in an inconsistent state.
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -183,6 +186,11 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
     that has at least one outcome row AND belongs to active agents/tickers.
 
     Returns a summary dict: { (agent_id, ticker): new_weight }
+
+    W10 fix: each upsert is committed immediately after being written, so a
+    crash or SIGKILL mid-run preserves all weights already processed rather
+    than losing the entire batch. A final commit() at the end acts as a
+    safeguard for any edge cases.
     """
     conn = _get_connection()
     now = datetime.now(timezone.utc).isoformat()
@@ -248,6 +256,9 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
                 (agent_id, ticker, w_new, now)
             )
 
+            # W10 fix: commit immediately after each upsert — crash-safe.
+            conn.commit()
+
             summary[(agent_id, ticker)] = w_new
             logger.info(
                 f"  {agent_id:35s} / {ticker:6s}: "
@@ -257,6 +268,7 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
         if skipped:
             logger.info(f"Skipped {skipped} pair(s) belonging to inactive agents or tickers.")
 
+        # Final safeguard commit (no-op if all per-pair commits succeeded).
         conn.commit()
         logger.info(f"agent_weights updated: {len(summary)} row(s) written.")
 
