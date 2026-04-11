@@ -474,7 +474,7 @@ def risk_manager_agent(state: AgentState) -> dict:
 
     # Log sector cap decisions
     for line in sector_cap_log:
-        print(line)
+        logger.info(line)
 
     # ── 3. Equal-weight sizing for risk computation ────────────────────────────
     # Use approved bullish tickers only
