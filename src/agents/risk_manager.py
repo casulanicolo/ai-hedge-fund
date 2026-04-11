@@ -25,6 +25,8 @@ from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
 from src.indicators.regime_detector import detect_macro_regime
 
+logger = logging.getLogger(__name__)
+
 AGENT_ID = "risk_manager"
 
 # ── Sector map (hardcoded for the 10-ticker universe) ─────────────────────────
@@ -62,7 +64,8 @@ def _load_risk_params() -> dict:
     try:
         with open(yaml_path, "r") as f:
             return yaml.safe_load(f) or {}
-    except Exception:
+    except Exception as e:
+        logger.warning("_load_risk_params: impossibile caricare risk_params.yaml (%s) — %s", yaml_path, e)
         return {}
 
 # ── Risk thresholds ────────────────────────────────────────────────────────────
@@ -109,10 +112,9 @@ def _get_returns(state: AgentState, tickers: list[str]) -> pd.DataFrame:
             log_ret = np.log(close / close.shift(1)).dropna()
             series[ticker] = log_ret
 
-        except Exception:
-            continue
-
-    if not series:
+        except Exception as e:
+                logger.warning("_get_returns: errore nel processare il ticker %s — %s", ticker, e)
+                continue
         return pd.DataFrame()
 
     df = pd.DataFrame(series)
@@ -288,7 +290,8 @@ def _compute_atr(ohlcv: pd.DataFrame, period: int = ATR_PERIOD) -> float:
         ).max(axis=1)
         atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
         return float(atr.iloc[-1])
-    except Exception:
+    except Exception as e:
+        logger.warning("_compute_atr: errore nel calcolo ATR — %s", e)
         return 0.0
 
 
@@ -321,7 +324,8 @@ def _compute_trade_levels(
         if isinstance(ohlcv, dict) and "Close" in ohlcv:
             try:
                 ohlcv = pd.DataFrame(ohlcv)
-            except Exception:
+            except Exception as e:
+                logger.warning("_compute_trade_levels: errore conversione OHLCV dict→DataFrame per %s — %s", ticker, e)
                 continue
 
         if not isinstance(ohlcv, pd.DataFrame) or ohlcv.empty:
@@ -329,7 +333,8 @@ def _compute_trade_levels(
 
         try:
             entry = round(float(ohlcv["Close"].iloc[-1]), 2)
-        except Exception:
+        except Exception as e:
+            logger.warning("_compute_trade_levels: errore lettura prezzo di chiusura per %s — %s", ticker, e)
             continue
 
         atr = _compute_atr(ohlcv)
@@ -491,13 +496,15 @@ def risk_manager_agent(state: AgentState) -> dict:
     progress.update_status(AGENT_ID, None, "Computing historical VaR")
     try:
         daily_var = _historical_var(returns, eq_weights)
-    except Exception:
+    except Exception as e:
+        logger.warning("risk_manager: errore nel calcolo VaR storico — %s", e)
         daily_var = 0.0
 
     # ── 7. Max drawdown estimate ───────────────────────────────────────────────
     try:
         max_dd = _max_drawdown_estimate(returns, eq_weights)
-    except Exception:
+    except Exception as e:
+        logger.warning("risk_manager: errore nel calcolo Max Drawdown — %s", e)
         max_dd = 0.0
 
     # ── 8. Warnings ────────────────────────────────────────────────────────────
@@ -557,7 +564,8 @@ def risk_manager_agent(state: AgentState) -> dict:
     progress.update_status(AGENT_ID, None, "Fetching VIX macro regime")
     try:
         macro_regime = detect_macro_regime()
-    except Exception:
+    except Exception as e:
+        logger.warning("risk_manager: errore nel fetch del macro regime VIX — %s", e)
         macro_regime = {
             "macro_regime": "CAUTION",
             "vix": None,
