@@ -6,6 +6,7 @@ rileva il regime di mercato e produce un segnale strutturato via LLM.
 """
 
 import json
+import logging
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -16,6 +17,8 @@ from src.data.state_reader import get_ohlcv_daily, get_ohlcv_5m
 from src.indicators.technical_indicators import compute_indicator_snapshot
 from src.indicators.regime_detector import detect_regime
 from src.utils.trade_levels import compute_trade_levels
+
+logger = logging.getLogger(__name__)
 
 
 ##### Technical Analyst Agent #####
@@ -37,62 +40,80 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     technical_analysis = {}
 
     for ticker in tickers:
-        progress.update_status(agent_id, ticker, "Reading OHLCV from prefetched data")
+        try:
+            progress.update_status(agent_id, ticker, "Reading OHLCV from prefetched data")
 
-        # --- 1. Leggi DataFrame dallo state ---
-        daily_df    = get_ohlcv_daily(state, ticker)
-        intraday_df = get_ohlcv_5m(state, ticker)
+            # --- 1. Leggi DataFrame dallo state ---
+            daily_df    = get_ohlcv_daily(state, ticker)
+            intraday_df = get_ohlcv_5m(state, ticker)
 
-        if daily_df is not None:
-            daily_df = _normalize_df(daily_df)
-        if intraday_df is not None:
-            intraday_df = _normalize_df(intraday_df)
+            if daily_df is not None:
+                daily_df = _normalize_df(daily_df)
+            if intraday_df is not None:
+                intraday_df = _normalize_df(intraday_df)
 
-        # --- 2. Calcola indicatori ---
-        progress.update_status(agent_id, ticker, "Computing indicators")
-        snapshot = compute_indicator_snapshot(daily_df, intraday_df)
+            # --- 2. Calcola indicatori ---
+            progress.update_status(agent_id, ticker, "Computing indicators")
+            snapshot = compute_indicator_snapshot(daily_df, intraday_df)
 
-        if not snapshot:
-            progress.update_status(agent_id, ticker, "Failed: insufficient price data")
+            if not snapshot:
+                progress.update_status(agent_id, ticker, "Failed: insufficient price data")
+                technical_analysis[ticker] = {
+                    "direction":       "NEUTRAL",
+                    "expected_return": 0.0,
+                    "confidence":      0.1,
+                    "indicators":      {},
+                    "regime":          "UNKNOWN",
+                    "regime_direction": "FLAT",
+                    "reasoning":       "Insufficient price data for technical analysis.",
+                }
+                continue
+
+            snapshot["has_intraday"] = intraday_df is not None
+            snapshot["daily_bars"]   = len(daily_df) if daily_df is not None else 0
+
+            # --- 3. Rileva regime ---
+            progress.update_status(agent_id, ticker, "Detecting market regime")
+            regime_info = detect_regime(snapshot)
+
+            # --- 4. Genera segnale via LLM ---
+            progress.update_status(agent_id, ticker, "Generating LLM signal")
+            signal_result = _generate_signal_via_llm(state, ticker, snapshot, regime_info, agent_id)
+
+            # --- 5. Assembla output ---
+            levels = compute_trade_levels(signal_result.direction, state, ticker)
             technical_analysis[ticker] = {
-                "direction":       "NEUTRAL",
-                "expected_return": 0.0,
-                "confidence":      0.1,
-                "indicators":      {},
-                "regime":          "UNKNOWN",
-                "regime_direction": "FLAT",
-                "reasoning":       "Insufficient price data for technical analysis.",
+                "direction":        signal_result.direction,
+                "expected_return":  signal_result.expected_return,
+                "confidence":       signal_result.confidence,
+                "regime":           regime_info["regime"],
+                "regime_direction": regime_info["direction"],
+                "indicators":       _build_indicators_summary(snapshot),
+                "reasoning":        signal_result.reasoning,
+                **levels,
             }
-            continue
 
-        snapshot["has_intraday"] = intraday_df is not None
-        snapshot["daily_bars"]   = len(daily_df) if daily_df is not None else 0
+            progress.update_status(
+                agent_id, ticker, "Done",
+                analysis=json.dumps(technical_analysis[ticker], indent=2)
+            )
 
-        # --- 3. Rileva regime ---
-        progress.update_status(agent_id, ticker, "Detecting market regime")
-        regime_info = detect_regime(snapshot)
-
-        # --- 4. Genera segnale via LLM ---
-        progress.update_status(agent_id, ticker, "Generating LLM signal")
-        signal_result = _generate_signal_via_llm(state, ticker, snapshot, regime_info, agent_id)
-
-        # --- 5. Assembla output ---
-        levels = compute_trade_levels(signal_result.direction, state, ticker)
-        technical_analysis[ticker] = {
-            "direction":        signal_result.direction,
-            "expected_return":  signal_result.expected_return,
-            "confidence":       signal_result.confidence,
-            "regime":           regime_info["regime"],
-            "regime_direction": regime_info["direction"],
-            "indicators":       _build_indicators_summary(snapshot),
-            "reasoning":        signal_result.reasoning,
-            **levels,
-        }
-
-        progress.update_status(
-            agent_id, ticker, "Done",
-            analysis=json.dumps(technical_analysis[ticker], indent=2)
-        )
+        except Exception as e:
+            logger.error(
+                "technical_analyst_agent: errore inatteso per ticker %s — %s. "
+                "Il ticker viene saltato e gli altri continuano.",
+                ticker, e, exc_info=True,
+            )
+            progress.update_status(agent_id, ticker, f"Error: {e}")
+            technical_analysis[ticker] = {
+                "direction":        "NEUTRAL",
+                "expected_return":  0.0,
+                "confidence":       0.1,
+                "indicators":       {},
+                "regime":           "UNKNOWN",
+                "regime_direction": "FLAT",
+                "reasoning":        f"Errore inatteso durante l'analisi: {e}",
+            }
 
     # --- Messaggio LangGraph ---
     message = HumanMessage(
