@@ -13,6 +13,7 @@ Writes risk_report to state. Does NOT block signals – only annotates.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import numpy as np
 import pandas as pd
