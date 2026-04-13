@@ -15,6 +15,14 @@ from src.utils.trade_levels import compute_trade_levels
 
 logger = logging.getLogger(__name__)
 
+# Ticker classificati come Financials: usano debt_to_assets invece di D/E
+# (D/E non è significativo per banche/payment networks per design della leva)
+FINANCIALS_TICKERS: frozenset[str] = frozenset({
+    "JPM", "GS", "MS", "BAC", "C", "WFC",   # banche US
+    "V", "MA", "AXP", "PYPL",                 # payment networks
+    "BLK", "SCHW", "BX",                      # asset managers
+})
+
 
 # ── Data loader ──────────────────────────────────────────────────────────────
 
@@ -160,6 +168,55 @@ def score_debt_equity(bsq: pd.DataFrame) -> tuple[float, dict]:
     return round(score, 1), raw
 
 
+def score_debt_to_assets(bsq: pd.DataFrame) -> tuple[float, dict]:
+    """
+    Score 0-100 per titoli Financials basato su Debt/Assets.
+    Sostituisce score_debt_equity per banche e payment networks,
+    dove un D/E alto è strutturale e non un segnale di rischio.
+
+    Scala di valutazione:
+      D/A < 0.70 → eccellente (score ~90-100)
+      D/A 0.70-0.80 → buono    (score ~70-85)
+      D/A 0.80-0.90 → neutro   (score ~45-65)
+      D/A 0.90-0.95 → attenzione (score ~20-40)
+      D/A > 0.95 → critico    (score ~0-15)
+    """
+    raw: dict[str, Any] = {}
+    try:
+        debt   = bsq.loc["Total Debt"]
+        assets = bsq.loc["Total Assets"]
+
+        ratios = []
+        for i in range(min(4, len(debt))):
+            d = float(debt.iloc[i])
+            a = float(assets.iloc[i])
+            ratios.append(d / a if a and a != 0 else None)
+
+        ratios  = [r for r in ratios if r is not None]
+        current = ratios[0] if ratios else None
+        trend   = ratios[0] - ratios[-1] if len(ratios) >= 2 else 0
+
+        raw["debt_to_assets_current"] = round(current, 3) if current is not None else None
+        raw["debt_to_assets_trend"]   = round(trend, 3)
+        raw["debt_to_assets_history"] = [round(r, 3) for r in ratios]
+
+        if current is not None:
+            # Penalità progressiva: ottimo sotto 0.70, critico sopra 0.95
+            score = 100 - max(0, min(100, (current - 0.50) * 400))
+        else:
+            score = 50.0
+
+        # Trend: D/A in aumento è negativo, in calo è positivo
+        score -= max(-15, min(15, trend * 150))
+        score = max(0.0, min(100.0, score))
+
+    except Exception as e:
+        raw["error"] = str(e)
+        score = 50.0
+
+    return round(score, 1), raw
+
+
 def score_insider_activity(info: dict) -> tuple[float, dict]:
     """Score 0-100 from insider ownership (heldPercentInsiders)."""
     raw: dict[str, Any] = {}
@@ -225,7 +282,18 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
             s_rev, r_rev = score_revenue_growth(incq)       if incq is not None and not incq.empty else (50.0, {"error": "no data"})
             s_mar, r_mar = score_operating_margin(incq)     if incq is not None and not incq.empty else (50.0, {"error": "no data"})
             s_fcf, r_fcf = score_fcf_yield(cfq, market_cap) if cfq  is not None and not cfq.empty  else (50.0, {"error": "no data"})
-            s_de,  r_de  = score_debt_equity(bsq)           if bsq  is not None and not bsq.empty   else (50.0, {"error": "no data"})
+            # Usa debt_to_assets per Financials, debt_equity per tutti gli altri
+            _sector_from_info = info.get("sector", "")
+            _is_financial = (ticker in FINANCIALS_TICKERS or
+                             "financial" in _sector_from_info.lower() or
+                             "bank" in _sector_from_info.lower())
+            if _is_financial:
+                s_de, r_de = score_debt_to_assets(bsq) if bsq is not None and not bsq.empty else (50.0, {"error": "no data"})
+                r_de["scoring_method"] = "debt_to_assets"
+                logger.info("fundamentals | %s: Financials → usando debt_to_assets", ticker)
+            else:
+                s_de, r_de = score_debt_equity(bsq)   if bsq is not None and not bsq.empty else (50.0, {"error": "no data"})
+                r_de["scoring_method"] = "debt_equity"
             s_ins, r_ins = score_insider_activity(info)
 
             composite = round((s_rev + s_mar + s_fcf + s_de + s_ins) / 5, 1)
@@ -234,7 +302,7 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
                 "revenue_growth":   s_rev,
                 "operating_margin": s_mar,
                 "fcf_yield":        s_fcf,
-                "debt_equity":      s_de,
+                "debt_score":       s_de,   # debt_to_assets per Financials, debt_equity altrimenti
                 "insider_activity": s_ins,
                 "composite":        composite,
             }
@@ -243,7 +311,7 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
                 "revenue_growth":   r_rev,
                 "operating_margin": r_mar,
                 "fcf_yield":        r_fcf,
-                "debt_equity":      r_de,
+                "debt_score":       r_de,
                 "insider_activity": r_ins,
             }
 
@@ -256,7 +324,7 @@ QUANTITATIVE SCORES (0=worst, 100=best):
 - Revenue Growth (QoQ + YoY): {s_rev}/100
 - Operating Margin Trend:     {s_mar}/100
 - FCF Yield:                  {s_fcf}/100
-- Debt/Equity Trajectory:     {s_de}/100
+- Debt Structure Score:        {s_de}/100  ({"Debt/Assets" if _is_financial else "Debt/Equity"})
 - Insider Ownership:          {s_ins}/100
 - COMPOSITE SCORE:            {composite}/100
 
