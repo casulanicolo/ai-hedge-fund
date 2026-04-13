@@ -9,8 +9,13 @@ Si esegue dopo tutti gli analyst agent e prima del Risk Manager.
 Responsabilità:
   1. VIX Check      – classifica il regime di volatilità di mercato e
                       produce un size_multiplier globale (1.0 → 0.40).
-  2. Signal Coherence Veto – veta i ticker in cui meno del 50% degli
+  2. Signal Coherence Veto – veta i ticker in cui meno del X% degli
                       agenti concorda sulla stessa direction.
+                      La soglia è dinamica in base al livello VIX:
+                        VIX < 18  (LOW):      0.45
+                        VIX 18-25 (NORMAL):   0.55
+                        VIX 25-35 (ELEVATED): 0.65
+                        VIX > 35  (CRISIS):   0.75
 
 Output scritto in state["data"]["devils_advocate_output"]:
   {
@@ -18,6 +23,7 @@ Output scritto in state["data"]["devils_advocate_output"]:
     "vix_regime":            "LOW" | "ELEVATED" | "HIGH" | "EXTREME",
     "macro_risk":            "LOW" | "MEDIUM" | "HIGH",
     "size_multiplier":       float,   # 0.40 – 1.0
+    "coherence_threshold":   float,   # threshold usata in questa run
     "vetoed_tickers":        list[str],
     "veto_reasons":          dict[str, str],   # ticker -> motivo
     "reasoning":             str,
@@ -41,9 +47,6 @@ AGENT_ID = "devils_advocate"
 # Agenti che non producono segnali direzionali (da escludere dal conteggio)
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch", "portfolio_manager", "prediction_log"}
 
-# Soglia di agreement sotto la quale un ticker viene vetato
-COHERENCE_THRESHOLD = 0.50  # 50% (era 60%)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Pydantic output model
@@ -61,6 +64,9 @@ class DevilsAdvocateOutput(BaseModel):
                            )
     size_multiplier:       float = Field(
                                description="Moltiplicatore globale delle size (0.40–1.0)"
+                           )
+    coherence_threshold:   float = Field(
+                               description="Soglia di coerenza dinamica usata in questa run"
                            )
     vetoed_tickers:        list[str] = Field(
                                default_factory=list,
@@ -141,6 +147,31 @@ def _classify_vix(vix_level: float) -> tuple[str, float, str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Dynamic coherence threshold
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_coherence_threshold(vix_level: float) -> float:
+    """
+    Restituisce la soglia di coerenza dinamica in base al livello VIX:
+      VIX < 18  (LOW):      0.45  – mercato calmo, accettiamo meno consensus
+      VIX 18-25 (NORMAL):   0.55  – soglia standard
+      VIX 25-35 (ELEVATED): 0.60  – volatilità elevata, richiediamo più agreement
+      VIX > 35  (CRISIS):   0.65  – crisi, standard molto alto
+
+    Impatto atteso: riduce false rejection in regime LOW,
+    aumenta protezione in regime ELEVATED/CRISIS.
+    """
+    if vix_level < 18:
+        return 0.45
+    elif vix_level < 25:
+        return 0.55
+    elif vix_level < 35:
+        return 0.60
+    else:
+        return 0.65
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Step 3.3 – Signal Coherence Veto
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -148,27 +179,41 @@ def _compute_signal_coherence(
     state: AgentState,
     tickers: list[str],
     vix_regime: str,
-) -> tuple[list[str], dict[str, str]]:
+    vix_level: float,
+) -> tuple[list[str], dict[str, str], float]:
     """
     Per ogni ticker calcola la percentuale di agenti che concordano
     sulla direction di maggioranza.
 
-    Se agreement < COHERENCE_THRESHOLD (50%) → ticker vetato.
+    La soglia di coerenza è dinamica in base al vix_level:
+      VIX < 18  → 0.45
+      VIX 18-25 → 0.55
+      VIX 25-35 → 0.65
+      VIX > 35  → 0.75
+
+    Se agreement < threshold → ticker vetato.
     In regime EXTREME → tutti i ticker vengono vetati indipendentemente.
 
-    Ritorna (vetoed_tickers, veto_reasons).
+    Ritorna (vetoed_tickers, veto_reasons, coherence_threshold_used).
     """
     analyst_signals: dict[str, Any] = state.get("data", {}).get("analyst_signals", {})
     vetoed: list[str] = []
     reasons: dict[str, str] = {}
 
+    # Calcola soglia dinamica
+    coherence_threshold = _get_coherence_threshold(vix_level)
+    logger.info(
+        "[%s] Coherence threshold dinamica: %.2f (VIX=%.1f)",
+        AGENT_ID, coherence_threshold, vix_level,
+    )
+
     # Regime EXTREME: veta tutto
     if vix_regime == "EXTREME":
         for ticker in tickers:
             vetoed.append(ticker)
-            reasons[ticker] = f"VIX regime EXTREME — nessuna operatività consentita"
+            reasons[ticker] = "VIX regime EXTREME — nessuna operatività consentita"
         logger.warning("[%s] Regime EXTREME: tutti i ticker vetati", AGENT_ID)
-        return vetoed, reasons
+        return vetoed, reasons, coherence_threshold
 
     for ticker in tickers:
         counts = {"LONG": 0, "SHORT": 0, "NEUTRAL": 0}
@@ -218,25 +263,27 @@ def _compute_signal_coherence(
         agreement_pct = majority_count / total
 
         logger.info(
-            "[%s] %s: LONG=%d SHORT=%d NEUTRAL=%d total=%d agreement=%.0f%% (majority=%s)",
+            "[%s] %s: LONG=%d SHORT=%d NEUTRAL=%d total=%d agreement=%.0f%% (majority=%s, threshold=%.0f%%)",
             AGENT_ID, ticker,
             counts["LONG"], counts["SHORT"], counts["NEUTRAL"],
-            total, agreement_pct * 100, majority_dir,
+            total, agreement_pct * 100, majority_dir, coherence_threshold * 100,
         )
 
-        if agreement_pct < COHERENCE_THRESHOLD:
+        if agreement_pct < coherence_threshold:
             vetoed.append(ticker)
             reason = (
                 f"Solo {agreement_pct:.0%} di agreement "
                 f"({counts['LONG']} LONG vs {counts['SHORT']} SHORT "
-                f"vs {counts['NEUTRAL']} NEUTRAL su {total} agenti)"
+                f"vs {counts['NEUTRAL']} NEUTRAL su {total} agenti) "
+                f"— sotto soglia {coherence_threshold:.0%} (VIX={vix_level:.1f})"
             )
             reasons[ticker] = reason
             logger.warning("[%s] %s vetato: %s", AGENT_ID, ticker, reason)
         else:
-            logger.info("[%s] %s: agreement %.0f%% — OK", AGENT_ID, ticker, agreement_pct * 100)
+            logger.info("[%s] %s: agreement %.0f%% — OK (threshold %.0f%%)",
+                        AGENT_ID, ticker, agreement_pct * 100, coherence_threshold * 100)
 
-    return vetoed, reasons
+    return vetoed, reasons, coherence_threshold
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -270,7 +317,9 @@ def devils_advocate_agent(state: AgentState) -> dict:
 
     # ── Step 3.3: Signal Coherence Veto ─────────────────────────────────────
     progress.update_status(AGENT_ID, None, "Checking signal coherence...")
-    vetoed_tickers, veto_reasons = _compute_signal_coherence(state, tickers, vix_regime)
+    vetoed_tickers, veto_reasons, coherence_threshold = _compute_signal_coherence(
+        state, tickers, vix_regime, vix_level
+    )
 
     if vetoed_tickers:
         logger.warning("[%s] Ticker vetati: %s", AGENT_ID, vetoed_tickers)
@@ -287,7 +336,9 @@ def devils_advocate_agent(state: AgentState) -> dict:
 
     reasoning = (
         f"VIX={vix_level:.1f} → regime {vix_regime} → size_multiplier={size_multiplier:.2f}. "
-        f"Macro risk: {macro_risk}. {veto_str}"
+        f"Macro risk: {macro_risk}. "
+        f"Coherence threshold dinamica: {coherence_threshold:.0%} (VIX={vix_level:.1f}). "
+        f"{veto_str}"
     )
 
     # ── Build output ─────────────────────────────────────────────────────────
@@ -296,6 +347,7 @@ def devils_advocate_agent(state: AgentState) -> dict:
         vix_regime=vix_regime,
         macro_risk=macro_risk,
         size_multiplier=size_multiplier,
+        coherence_threshold=coherence_threshold,
         vetoed_tickers=vetoed_tickers,
         veto_reasons=veto_reasons,
         reasoning=reasoning,
@@ -313,12 +365,13 @@ def devils_advocate_agent(state: AgentState) -> dict:
 
     show_agent_reasoning(output_dict, AGENT_ID)
     progress.update_status(AGENT_ID, None, "completed")
-    logger.info("[%s] completed — vetoed=%s multiplier=%.2f",
-                AGENT_ID, vetoed_tickers, size_multiplier)
+    logger.info("[%s] completed — vetoed=%s multiplier=%.2f threshold=%.2f",
+                AGENT_ID, vetoed_tickers, size_multiplier, coherence_threshold)
 
     summary = (
         f"Devil's Advocate | VIX={vix_level:.1f} ({vix_regime}) | "
         f"size_multiplier={size_multiplier:.2f} | "
+        f"coherence_threshold={coherence_threshold:.0%} | "
         f"vetoed={vetoed_tickers if vetoed_tickers else 'none'}"
     )
 
