@@ -75,6 +75,7 @@ MAX_SECTOR_PCT = 0.60          # >60% of bullish signals in one sector → warni
 MAX_PORTFOLIO_VAR = 0.04       # >4% daily VaR → warning
 MAX_DRAWDOWN_LIMIT = 0.15      # >15% estimated drawdown → warning
 MAX_SINGLE_TICKER_PCT = 0.25   # single ticker >25% sizing → warning
+MAX_SINGLE_VAR = 0.04          # single ticker VaR > 4% → blocked from bullish_approved
 
 # ── Trade level parameters ─────────────────────────────────────────────────────
 ATR_PERIOD  = 14    # ATR lookback (Wilder's smoothing)
@@ -154,6 +155,19 @@ def _historical_var(returns: pd.DataFrame, weights: dict[str, float]) -> float:
 
     percentile = (1 - VAR_CONFIDENCE) * 100
     var = -float(np.percentile(port_returns, percentile))
+    return max(0.0, round(var, 4))
+
+
+def _single_ticker_var(returns: pd.DataFrame, ticker: str) -> float:
+    """
+    Calcola VaR storico al 95% per un singolo ticker.
+    Ritorna VaR come frazione positiva (es. 0.042 = 4.2%).
+    Ritorna 0.0 se il ticker non è disponibile nei returns.
+    """
+    if returns.empty or ticker not in returns.columns:
+        return 0.0
+    percentile = (1 - VAR_CONFIDENCE) * 100
+    var = -float(np.percentile(returns[ticker].dropna(), percentile))
     return max(0.0, round(var, 4))
 
 
@@ -489,6 +503,32 @@ def risk_manager_agent(state: AgentState) -> dict:
 
     corr_matrix = _correlation_matrix(returns)
 
+    # ── 4b. Single-ticker VaR cap ─────────────────────────────────────────────
+    progress.update_status(AGENT_ID, None, "Computing single-ticker VaR cap")
+    single_var_results: dict[str, float] = {}
+    single_var_blocked: dict[str, float] = {}
+    bullish_after_var: list[str] = []
+
+    for ticker in bullish_approved:
+        var_t = _single_ticker_var(returns, ticker)
+        single_var_results[ticker] = var_t
+        if var_t > MAX_SINGLE_VAR:
+            single_var_blocked[ticker] = var_t
+            logger.warning(
+                "[%s] %s bloccato: VaR individuale %.2f%% > soglia %.0f%%",
+                AGENT_ID, ticker, var_t * 100, MAX_SINGLE_VAR * 100,
+            )
+        else:
+            bullish_after_var.append(ticker)
+
+    if single_var_blocked:
+        logger.info(
+            "[%s] Single-ticker VaR cap: %d ticker bloccati %s",
+            AGENT_ID, len(single_var_blocked), list(single_var_blocked.keys()),
+        )
+
+    bullish_approved = bullish_after_var
+
     # ── 5. Sector concentration (on approved tickers) ─────────────────────────
     sector_fractions = _sector_concentration(bullish_approved)
     concentrated_sectors = {s: f for s, f in sector_fractions.items() if f > MAX_SECTOR_PCT}
@@ -512,6 +552,13 @@ def risk_manager_agent(state: AgentState) -> dict:
     warnings: list[str] = []
 
     # Sector cap exclusions → warning
+    if single_var_blocked:
+        warnings.append(
+            f"Single-ticker VaR cap ({MAX_SINGLE_VAR*100:.0f}%): "
+            f"{len(single_var_blocked)} ticker(s) bloccati — "
+            f"{[f'{t}={v*100:.1f}%' for t, v in single_var_blocked.items()]}"
+        )
+
     if bullish_excluded:
         warnings.append(
             f"Sector cap ({int(sector_cap*100)}%): {len(bullish_excluded)} ticker(s) "
@@ -584,6 +631,8 @@ def risk_manager_agent(state: AgentState) -> dict:
         "signal_summary": agg,
         "bullish_tickers": bullish_approved,          # only approved tickers
         "bullish_tickers_excluded": bullish_excluded, # Fase 6: excluded by sector cap
+        "single_var_blocked": single_var_blocked,     # Fix 3: blocked by single-ticker VaR cap
+        "single_var_results": single_var_results,     # Fix 3: VaR individuale per ogni bullish ticker
         "bearish_tickers": bearish_tickers,
         "sector_cap": sector_cap,                     # Fase 6: cap used
         "sector_cap_log": sector_cap_log,             # Fase 6: per-sector decision log
@@ -619,7 +668,8 @@ def risk_manager_agent(state: AgentState) -> dict:
 
     summary = (
         f"Risk Manager | {len(bullish_approved)} bullish approved "
-        f"({len(bullish_excluded)} excluded by sector cap) "
+        f"({len(bullish_excluded)} excl. sector cap, "
+        f"{len(single_var_blocked)} excl. VaR>{MAX_SINGLE_VAR*100:.0f}%) "
         f"/ {len(bearish_tickers)} bearish "
         f"| VaR {daily_var*100:.1f}% | MaxDD {max_dd*100:.1f}% "
         f"| Trade levels: {len(trade_levels)} | Warnings: {len(warnings)}"
