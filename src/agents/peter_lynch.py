@@ -1,4 +1,4 @@
-﻿from src.graph.state import AgentState, show_agent_reasoning
+from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api_shim import get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
 from src.utils.trade_levels import compute_trade_levels
 from src.utils.ema_filter import apply_ema_filter
@@ -32,7 +32,7 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
       - If fundamentals strongly align with GARP, be more aggressive.
 
     The result is a bullish/bearish/neutral signal, along with a
-    confidence (0â€“100) and a textual reasoning explanation.
+    confidence (0-100) and a textual reasoning explanation.
     """
 
     data = state["data"]
@@ -170,7 +170,7 @@ def analyze_lynch_growth(financial_line_items: list) -> dict:
         return {"score": 0, "details": "Insufficient financial data for growth analysis"}
 
     details = []
-    raw_score = 0  # We'll sum up points, then scale to 0â€“10 eventually
+    raw_score = 0  # We'll sum up points, then scale to 0-10 eventually
 
     # 1) Revenue Growth
     revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
@@ -218,7 +218,7 @@ def analyze_lynch_growth(financial_line_items: list) -> dict:
     else:
         details.append("Not enough EPS data for growth calculation.")
 
-    # raw_score can be up to 6 => scale to 0â€“10
+    # raw_score can be up to 6 => scale to 0-10
     final_score = min(10, (raw_score / 6) * 10)
     return {"score": final_score, "details": "; ".join(details)}
 
@@ -235,7 +235,7 @@ def analyze_lynch_fundamentals(financial_line_items: list) -> dict:
         return {"score": 0, "details": "Insufficient fundamentals data"}
 
     details = []
-    raw_score = 0  # We'll accumulate up to 6 points, then scale to 0â€“10
+    raw_score = 0  # We'll accumulate up to 6 points, then scale to 0-10
 
     # 1) Debt-to-Equity
     debt_values = [fi.total_debt for fi in financial_line_items if fi.total_debt is not None]
@@ -281,9 +281,30 @@ def analyze_lynch_fundamentals(financial_line_items: list) -> dict:
     else:
         details.append("No free cash flow data available.")
 
-    # raw_score up to 6 => scale to 0â€“10
+    # raw_score up to 6 => scale to 0-10
     final_score = min(10, (raw_score / 6) * 10)
     return {"score": final_score, "details": "; ".join(details)}
+
+
+_PEG_CAP = 10.0   # Fix 7B: cap on internal PEG fallback (Tier 2: Net Income CAGR)
+
+
+def _compute_cagr(values: list, label: str) -> tuple[float | None, str]:
+    """
+    Helper: compute CAGR from a list of values (most recent first).
+    Returns (cagr_rate, description_string) or (None, reason_string).
+    """
+    # Need at least 2 valid positive values for CAGR
+    valid = [(i, v) for i, v in enumerate(values) if v is not None and v > 0]
+    if len(valid) < 2:
+        return None, f"Insufficient positive {label} data for CAGR"
+    first_idx, first_val = valid[0]   # most recent positive
+    last_idx, last_val = valid[-1]    # oldest positive
+    num_years = last_idx - first_idx
+    if num_years <= 0:
+        return None, f"Single {label} data point; cannot compute CAGR"
+    cagr = (first_val / last_val) ** (1.0 / num_years) - 1
+    return cagr, f"Annualized {label} CAGR: {cagr:.1%} over {num_years} year(s)"
 
 
 def analyze_lynch_valuation(financial_line_items: list, market_cap: float | None) -> dict:
@@ -291,6 +312,12 @@ def analyze_lynch_valuation(financial_line_items: list, market_cap: float | None
     Peter Lynch's approach to 'Growth at a Reasonable Price' (GARP):
       - Emphasize the PEG ratio: (P/E) / Growth Rate
       - Also consider a basic P/E if PEG is unavailable
+
+    PEG calculation uses a three-tier fallback to maximise coverage:
+      1. Primary  — EPS CAGR (annualised, most recent available data)
+      2. Fallback — Net Income CAGR (proxy when EPS is sparse/negative)
+      3. Last resort — Revenue CAGR (for early-stage / high-growth names)
+
     A PEG < 1 is very attractive; 1-2 is fair; >2 is expensive.
     """
     if not financial_line_items or market_cap is None:
@@ -299,11 +326,10 @@ def analyze_lynch_valuation(financial_line_items: list, market_cap: float | None
     details = []
     raw_score = 0
 
-    # Gather data for P/E
+    # ── 1. Approximate P/E via market_cap / net_income ──────────────────────
     net_incomes = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+    eps_values  = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
 
-    # Approximate P/E via (market cap / net income) if net income is positive
     pe_ratio = None
     if net_incomes and net_incomes[0] and net_incomes[0] > 0:
         pe_ratio = market_cap / net_incomes[0]
@@ -311,39 +337,66 @@ def analyze_lynch_valuation(financial_line_items: list, market_cap: float | None
     else:
         details.append("No positive net income => can't compute approximate P/E")
 
-    # If we have at least 2 EPS data points, let's estimate growth
+    # ── 2. Earnings growth rate — three-tier fallback ────────────────────────
     eps_growth_rate = None
+    growth_source   = None
+
+    # Tier 1: EPS CAGR (most faithful to Lynch's PEG intent)
     if len(eps_values) >= 2:
+        num_years = len(eps_values) - 1
         latest_eps = eps_values[0]
-        older_eps = eps_values[-1]
-        if older_eps > 0:
-            # Calculate annualized growth rate (CAGR) for PEG ratio
-            num_years = len(eps_values) - 1
-            if latest_eps > 0:
-                # CAGR formula: (ending_value/beginning_value)^(1/years) - 1
-                eps_growth_rate = (latest_eps / older_eps) ** (1 / num_years) - 1
-            else:
-                # If latest EPS is negative, use simple average growth
-                eps_growth_rate = (latest_eps - older_eps) / (older_eps * num_years)
-            details.append(f"Annualized EPS growth rate: {eps_growth_rate:.1%}")
+        older_eps  = eps_values[-1]
+        if older_eps > 0 and latest_eps > 0:
+            eps_growth_rate = (latest_eps / older_eps) ** (1.0 / num_years) - 1
+            growth_source   = "EPS CAGR"
+            details.append(f"Annualized EPS CAGR: {eps_growth_rate:.1%} over {num_years} year(s)")
+        elif older_eps > 0 and latest_eps <= 0:
+            # Simple rate for negative-to-negative or positive-to-negative transition
+            eps_growth_rate = (latest_eps - older_eps) / (older_eps * num_years)
+            growth_source   = "EPS simple avg"
+            details.append(f"EPS simple avg growth: {eps_growth_rate:.1%} (latest EPS negative)")
         else:
             details.append("Cannot compute EPS growth rate (older EPS <= 0)")
-    else:
-        details.append("Not enough EPS data to compute growth rate")
 
-    # Compute PEG if possible
+    # Tier 2: Net Income CAGR — fallback when EPS unavailable or unreliable
+    # Fix 7A: cap applied here too (NI growth can be tiny on mature/cyclical names)
+    if eps_growth_rate is None or eps_growth_rate <= 0:
+        ni_values = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
+        ni_cagr, ni_desc = _compute_cagr(ni_values, "Net Income")
+        if ni_cagr is not None and ni_cagr > 0:
+            if pe_ratio is not None:
+                candidate_peg = pe_ratio / (ni_cagr * 100)
+                if candidate_peg < _PEG_CAP:
+                    eps_growth_rate = ni_cagr
+                    growth_source   = "Net Income CAGR (fallback)"
+                    details.append(f"{ni_desc} [used as EPS proxy]")
+                else:
+                    details.append(f"Net Income fallback skipped: PEG would be {candidate_peg:.1f} >= cap {_PEG_CAP}")
+            else:
+                eps_growth_rate = ni_cagr
+                growth_source   = "Net Income CAGR (fallback)"
+                details.append(f"{ni_desc} [used as EPS proxy]")
+        else:
+            details.append(f"Net Income fallback: {ni_desc}")
+
+    # Tier 3 (Revenue CAGR) removed — Fix 7B.
+    # Revenue growth as PEG denominator produces false SHORTs on mature names
+    # (WMT, JPM, ABBV, LIN: PEG 3-9 from low rev-growth drives unwarranted penalty).
+    # If Tier 1 and Tier 2 both fail, PEG stays None — no score contribution.
+    if eps_growth_rate is None or eps_growth_rate <= 0:
+        details.append("PEG growth rate unavailable after Tier 1-2 fallbacks; PEG skipped")
+
+    # ── 3. Compute PEG ───────────────────────────────────────────────────────
     peg_ratio = None
-    if pe_ratio and eps_growth_rate and eps_growth_rate > 0:
-        # PEG ratio formula: P/E divided by growth rate (as percentage)
-        # Since eps_growth_rate is stored as decimal (0.25 for 25%),
-        # we multiply by 100 to convert to percentage for the PEG calculation
-        # Example: P/E=20, growth=0.25 (25%) => PEG = 20/25 = 0.8
+    if pe_ratio is not None and eps_growth_rate is not None and eps_growth_rate > 0:
+        # PEG = P/E / (growth_rate * 100)  [growth_rate as decimal → percentage]
+        # e.g. P/E=20, growth=0.25 (25%) => PEG = 20/25 = 0.80
         peg_ratio = pe_ratio / (eps_growth_rate * 100)
-        details.append(f"PEG ratio: {peg_ratio:.2f}")
+        details.append(f"PEG ratio: {peg_ratio:.2f} (growth source: {growth_source})")
+    else:
+        details.append("PEG ratio: N/A (no valid P/E or positive growth rate available)")
 
-    # Scoring logic:
-    #   - P/E < 15 => +2, < 25 => +1
-    #   - PEG < 1 => +3, < 2 => +2, < 3 => +1
+    # ── 4. Scoring ───────────────────────────────────────────────────────────
     if pe_ratio is not None:
         if pe_ratio < 15:
             raw_score += 2
@@ -461,7 +514,7 @@ def generate_lynch_output(
                 6. Management & Story: A good 'story' behind the stock, but not overhyped or too complex.
                 
                 When you provide your reasoning, do it in Peter Lynch's voice:
-                - Cite the PEG ratio
+                - Cite the PEG ratio (and note if it was computed from a fallback growth proxy)
                 - Mention 'ten-bagger' potential if applicable
                 - Refer to personal or anecdotal observations (e.g., "If my kids love the product...")
                 - Use practical, folksy language
@@ -478,7 +531,7 @@ def generate_lynch_output(
             ),
             (
                 "human",
-                """Based on the following analysis data for {ticker}, produce your Peter Lynchâ€“style investment signal.
+                """Based on the following analysis data for {ticker}, produce your Peter Lynch-style investment signal.
 
                 Analysis Data:
                 {analysis_data}
@@ -505,5 +558,3 @@ def generate_lynch_output(
         state=state,
         default_factory=create_default_signal,
     )
-
-

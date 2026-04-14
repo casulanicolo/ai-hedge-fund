@@ -13,6 +13,13 @@ Fix 5 (2026-04-14):
   - Metriche riportate sia SENZA filtro (baseline) che CON filtro (Fix 5)
   - Colonna "direction_filtered" nei CSV di output
 
+Fix 7 (peter_lynch PEG fallback):
+  - score_peter_lynch aggiornato per simulare il calcolo PEG interno
+  - Se peg_ratio da yfinance è None, calcola PEG = pe_ratio / (earnings_growth * 100)
+  - Se anche earnings_growth è None, usa revenue_growth come proxy
+  - Metriche confrontate: baseline (PEG solo esterno) vs Fix 7 (PEG con fallback interno)
+  - Colonne aggiuntive: "peg_source", "peg_used"
+
 Agenti testati:
   1. warren_buffett        – ROE, op margin, P/E ragionevole, FCF, D/E
   2. ben_graham            – P/B basso, current ratio, debt ratio, dividendi, EPS stabile
@@ -39,6 +46,7 @@ Output:
   backtest/results/05_operative_scores.csv
   backtest/results/05_operative_comparison.csv
   backtest/results/05_operative_summary.csv
+  backtest/results/05_lynch_peg_coverage.csv   ← nuovo Fix 7
 
 Esegui: python backtest/05_backtest_operative_agents.py
 """
@@ -491,14 +499,88 @@ def score_mohnish_pabrai(m: dict) -> float:
     return round(max(0, min(100, score)), 1)
 
 
+PEG_CAP = 10.0   # Fix 7A: PEG calcolato internamente accettato solo se < questo valore
+
+
+def _compute_peg_internal(m: dict) -> tuple:
+    """
+    Replica la logica di fallback PEG di peter_lynch.py (Fix 7A).
+    Restituisce (peg_value, source_label) o (None, reason).
+
+    Tier 1: peg_ratio da yfinance (esterno)           — nessun cap
+    Tier 2: pe_ratio / (earnings_growth * 100)         — cap a PEG_CAP
+    Tier 3: Revenue CAGR rimosso (Fix 7B) — produce falsi SHORT su titoli maturi
+    """
+    # Tier 1: PEG esterno yfinance — nessun guardrail, è già elaborato
+    peg_ext = safe(m["peg_ratio"])
+    if peg_ext is not None and peg_ext > 0:
+        return peg_ext, "external_yfinance"
+
+    pe = safe(m["pe_ratio"])
+    if pe is None or pe <= 0:
+        return None, "no_pe"
+
+    # Tier 2: earnings_growth come proxy EPS CAGR — cap a PEG_CAP
+    eg = safe(m["earnings_growth"])
+    if eg is not None and eg > 0:
+        peg = pe / (eg * 100)
+        if peg < PEG_CAP:
+            return peg, "internal_earnings_growth"
+        # Cap: earnings_growth troppo bassa rispetto al P/E (es. mature/ciclici)
+        # Non scendere al Tier 3 con revenue growth (ancora meno affidabile)
+        return None, f"internal_earnings_growth_capped ({peg:.1f} >= {PEG_CAP})"
+
+    # Tier 3 (Revenue CAGR) removed — Fix 7B.
+    # Revenue-based PEG produces false SHORTs on mature names (WMT, JPM, ABBV).
+    return None, "no_growth_data"
+
+
 def score_peter_lynch(m: dict) -> float:
     """
-    Logica reale: PEG ratio è la metrica principale (< 1 = ottimo).
-    + analyze_lynch_growth (EPS + revenue multi-anno)
-    + current_ratio, dividend check
+    BASELINE (pre Fix 7): usa solo peg_ratio da yfinance.
+    Se peg_ratio è None, quella componente vale 0.
     """
     score = 50.0
     peg = safe(m["peg_ratio"])
+    if peg is not None:
+        if peg < 0.5:    score += 25
+        elif peg < 1.0:  score += 15
+        elif peg < 1.5:  score += 5
+        elif peg > 2.5:  score -= 15
+        elif peg > 3.0:  score -= 25
+
+    eg = safe(m["earnings_growth"])
+    if eg is not None:
+        if eg > 0.25:   score += 10
+        elif eg > 0.10: score += 5
+        elif eg < 0:    score -= 10
+
+    rg = safe(m["revenue_growth"])
+    if rg is not None:
+        if rg > 0.15:   score += 7
+        elif rg > 0.05: score += 3
+        elif rg < -0.05: score -= 7
+
+    cr = safe(m["current_ratio"])
+    if cr is not None:
+        if cr > 1.5:   score += 5
+        elif cr < 1.0: score -= 5
+
+    div = safe(m["dividend_yield"])
+    if div is not None and div > 0.01:
+        score += 3
+
+    return round(max(0, min(100, score)), 1)
+
+
+def score_peter_lynch_fix7(m: dict) -> float:
+    """
+    Fix 7: usa PEG con fallback interno se quello yfinance è None.
+    Logica di scoring PEG identica al baseline.
+    """
+    score = 50.0
+
+    peg, _ = _compute_peg_internal(m)
     if peg is not None:
         if peg < 0.5:    score += 25
         elif peg < 1.0:  score += 15
@@ -754,7 +836,8 @@ AGENTS = {
     "cathie_wood":           score_cathie_wood,
     "michael_burry":         score_michael_burry,
     "mohnish_pabrai":        score_mohnish_pabrai,
-    "peter_lynch":           score_peter_lynch,
+    "peter_lynch":           score_peter_lynch,           # baseline
+    "peter_lynch_fix7":      score_peter_lynch_fix7,      # Fix 7: PEG fallback interno
     "phil_fisher":           score_phil_fisher,
     "rakesh_jhunjhunwala":   score_rakesh_jhunjhunwala,
     "stanley_druckenmiller": score_stanley_druckenmiller,
@@ -782,26 +865,55 @@ def get_forward_returns(ohlcv_data: dict, ticker: str) -> dict:
 
 def run_backtest():
     print("=" * 65)
-    print("  ATHANOR ALPHA – F4  |  Backtest: Agenti Operativi (Cat. B)")
+    print("  ATHANOR ALPHA – F4/Fix7  |  Backtest: Agenti Operativi (Cat. B)")
     print(f"  Eseguito: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 65)
 
-    print("\n[1/4] Carico dati ...")
+    print("\n[1/5] Carico dati ...")
     with open(FUND_PATH,  "rb") as f: fund_data  = pickle.load(f)
     with open(OHLCV_PATH, "rb") as f: ohlcv_data = pickle.load(f)
     tickers = list(fund_data.keys())
     print(f"  Ticker: {len(tickers)}  |  Agenti: {len(AGENTS)}")
 
-    print("\n[2/4] Calcolo score per ogni agente x ticker ...")
+    # ── Fix 7 coverage check ────────────────────────────────────────────────
+    print("\n[2/5] Fix 7 – analisi copertura PEG ...")
+    coverage_rows = []
+    for ticker in tickers:
+        m = extract_metrics(fund_data[ticker])
+        peg_ext = safe(m["peg_ratio"])
+        peg_val, peg_src = _compute_peg_internal(m)
+        coverage_rows.append({
+            "ticker":         ticker,
+            "peg_external":   peg_ext,
+            "peg_used":       round(peg_val, 3) if peg_val is not None else None,
+            "peg_source":     peg_src,
+            "peg_was_none":   peg_ext is None,
+            "peg_recovered":  peg_ext is None and peg_val is not None,
+        })
+    cov_df = pd.DataFrame(coverage_rows)
+    n_total     = len(cov_df)
+    n_none_ext  = cov_df["peg_was_none"].sum()
+    n_recovered = cov_df["peg_recovered"].sum()
+    print(f"  Ticker totali        : {n_total}")
+    print(f"  PEG esterno None     : {n_none_ext}  ({n_none_ext/n_total*100:.0f}%)")
+    print(f"  PEG recuperati Fix 7 : {n_recovered}  ({n_recovered/n_total*100:.0f}%)")
+    if n_none_ext > 0:
+        print(f"  Ticker senza PEG esterno:")
+        for _, row in cov_df[cov_df["peg_was_none"]].iterrows():
+            print(f"    {row['ticker']:8s}  peg_used={row['peg_used']}  source={row['peg_source']}")
+
+    # ── Calcolo score ────────────────────────────────────────────────────────
+    print("\n[3/5] Calcolo score per ogni agente x ticker ...")
     rows = []
     for ticker in tickers:
         m         = extract_metrics(fund_data[ticker])
         fwd       = get_forward_returns(ohlcv_data, ticker)
-        ema_trend = get_ema_trend(ohlcv_data, ticker)   # Fix 5
+        ema_trend = get_ema_trend(ohlcv_data, ticker)
+        peg_val, peg_src = _compute_peg_internal(m)
         for agent_name, score_fn in AGENTS.items():
             s        = score_fn(m)
             dir_raw  = direction(s)
-            dir_filt = apply_ema_filter_backtest(dir_raw, ema_trend)   # Fix 5
+            dir_filt = apply_ema_filter_backtest(dir_raw, ema_trend)
             rows.append({
                 "agent":              agent_name,
                 "ticker":             ticker,
@@ -813,16 +925,18 @@ def run_backtest():
                 "fwd_5d":             fwd["fwd_5d"],
                 "fwd_20d":            fwd["fwd_20d"],
                 "total_ret":          fwd["total_ret"],
+                "peg_source":         peg_src if "lynch" in agent_name else None,
             })
 
     df = pd.DataFrame(rows)
 
-    print("\n[3/4] Calcolo metriche per agente ...")
+    # ── Metriche per agente ──────────────────────────────────────────────────
+    print("\n[4/5] Calcolo metriche per agente ...")
     agent_stats = []
     for agent in AGENTS.keys():
         ag = df[df["agent"] == agent].copy()
 
-        # ── Baseline (senza filtro EMA) ───────────────────────────────────
+        # Baseline (senza filtro EMA)
         n_long    = (ag["direction"] == "LONG").sum()
         n_short   = (ag["direction"] == "SHORT").sum()
         n_neutral = (ag["direction"] == "NEUTRAL").sum()
@@ -836,7 +950,7 @@ def run_backtest():
         pnl_short = ag[ag["direction"] == "SHORT"]["fwd_20d"].sum() * -100
         pnl_total = pnl_long + pnl_short
 
-        # ── Fix 5: con filtro EMA ─────────────────────────────────────────
+        # Con filtro EMA
         n_long_f    = (ag["direction_filtered"] == "LONG").sum()
         n_short_f   = (ag["direction_filtered"] == "SHORT").sum()
         n_neutral_f = (ag["direction_filtered"] == "NEUTRAL").sum()
@@ -858,7 +972,6 @@ def run_backtest():
 
         agent_stats.append({
             "agent":                 agent,
-            # Baseline
             "n_long":                n_long,
             "n_short":               n_short,
             "n_neutral":             n_neutral,
@@ -867,7 +980,6 @@ def run_backtest():
             "win_rate_5d_pct":       round(wr_5d,  1),
             "win_rate_20d_pct":      round(wr_20d, 1),
             "pnl_simulated_pct":     round(pnl_total, 2),
-            # Fix 5: filtrato
             "n_long_ema":            n_long_f,
             "n_short_ema":           n_short_f,
             "n_neutral_ema":         n_neutral_f,
@@ -885,53 +997,83 @@ def run_backtest():
 
     agent_df = pd.DataFrame(agent_stats).sort_values("win_rate_20d_ema_pct", ascending=False)
 
-    print("\n[4/4] Salvataggio CSV ...")
-    scores_path = os.path.join(RESULT_DIR, "05_operative_scores.csv")
-    comp_path   = os.path.join(RESULT_DIR, "05_operative_comparison.csv")
-    summ_path   = os.path.join(RESULT_DIR, "05_operative_summary.csv")
+    # ── Fix 7 confronto diretto peter_lynch vs peter_lynch_fix7 ─────────────
+    print("\n" + "=" * 65)
+    print("  Fix 7 — CONFRONTO: peter_lynch (baseline) vs peter_lynch_fix7")
+    print("=" * 65)
+    lynch_agents = ["peter_lynch", "peter_lynch_fix7"]
+    for ag_name in lynch_agents:
+        row = agent_df[agent_df["agent"] == ag_name]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+        print(f"\n  [{ag_name}]")
+        print(f"    BASE  : L={r['n_long']:2.0f} S={r['n_short']:2.0f}  WR_5d={r['win_rate_5d_pct']:.1f}%  WR_20d={r['win_rate_20d_pct']:.1f}%  P&L={r['pnl_simulated_pct']:+.2f}%")
+        print(f"    EMA   : L={r['n_long_ema']:2.0f} S={r['n_short_ema']:2.0f}  WR_5d={r['win_rate_5d_ema_pct']:.1f}%  WR_20d={r['win_rate_20d_ema_pct']:.1f}%  P&L={r['pnl_ema_pct']:+.2f}%")
+
+    b  = agent_df[agent_df["agent"] == "peter_lynch"].iloc[0]
+    f7 = agent_df[agent_df["agent"] == "peter_lynch_fix7"].iloc[0]
+    print(f"\n  Delta WR_5d  (Fix7 - Baseline) : {f7['win_rate_5d_ema_pct']  - b['win_rate_5d_ema_pct']:+.1f}pp")
+    print(f"  Delta WR_20d (Fix7 - Baseline) : {f7['win_rate_20d_ema_pct'] - b['win_rate_20d_ema_pct']:+.1f}pp")
+    print(f"  Delta n_LONG EMA (Fix7 - Base) : {f7['n_long_ema'] - b['n_long_ema']:+.0f}")
+    print(f"  Delta n_SHORT EMA(Fix7 - Base) : {f7['n_short_ema'] - b['n_short_ema']:+.0f}")
+
+    # ── Salvataggio CSV ──────────────────────────────────────────────────────
+    print("\n[5/5] Salvataggio CSV ...")
+    scores_path   = os.path.join(RESULT_DIR, "05_operative_scores.csv")
+    comp_path     = os.path.join(RESULT_DIR, "05_operative_comparison.csv")
+    summ_path     = os.path.join(RESULT_DIR, "05_operative_summary.csv")
+    coverage_path = os.path.join(RESULT_DIR, "05_lynch_peg_coverage.csv")
 
     df.to_csv(scores_path, index=False, float_format="%.4f")
     agent_df.to_csv(comp_path, index=False, float_format="%.2f")
+    cov_df.to_csv(coverage_path, index=False, float_format="%.4f")
 
     best_wr_base = agent_df.sort_values("win_rate_20d_pct",     ascending=False).iloc[0]["agent"]
     best_wr_ema  = agent_df.sort_values("win_rate_20d_ema_pct", ascending=False).iloc[0]["agent"]
     best_pnl     = agent_df.sort_values("pnl_simulated_pct",    ascending=False).iloc[0]["agent"]
     best_pnl_ema = agent_df.sort_values("pnl_ema_pct",          ascending=False).iloc[0]["agent"]
 
-    # Medie aggregate baseline vs filtrato
-    avg_wr5_base  = agent_df["win_rate_5d_pct"].mean()
-    avg_wr20_base = agent_df["win_rate_20d_pct"].mean()
-    avg_wr5_ema   = agent_df["win_rate_5d_ema_pct"].mean()
-    avg_wr20_ema  = agent_df["win_rate_20d_ema_pct"].mean()
+    # Escludi peter_lynch_fix7 dalla media aggregata (non è un agente di produzione)
+    prod_agents = agent_df[agent_df["agent"] != "peter_lynch_fix7"]
+    avg_wr5_base  = prod_agents["win_rate_5d_pct"].mean()
+    avg_wr20_base = prod_agents["win_rate_20d_pct"].mean()
+    avg_wr5_ema   = prod_agents["win_rate_5d_ema_pct"].mean()
+    avg_wr20_ema  = prod_agents["win_rate_20d_ema_pct"].mean()
 
     pd.DataFrame([
-        {"metrica": "Ticker",                      "valore": len(tickers)},
-        {"metrica": "Agenti",                      "valore": len(AGENTS)},
-        {"metrica": "[BASE] Miglior WR 20d",        "valore": best_wr_base},
-        {"metrica": "[BASE] WR 20d medio",          "valore": f"{avg_wr20_base:.1f}%"},
-        {"metrica": "[BASE] WR 5d medio",           "valore": f"{avg_wr5_base:.1f}%"},
-        {"metrica": "[EMA]  Miglior WR 20d",        "valore": best_wr_ema},
-        {"metrica": "[EMA]  WR 20d medio",          "valore": f"{avg_wr20_ema:.1f}%"},
-        {"metrica": "[EMA]  WR 5d medio",           "valore": f"{avg_wr5_ema:.1f}%"},
-        {"metrica": "Delta WR 5d  (EMA - BASE)",    "valore": f"{avg_wr5_ema - avg_wr5_base:+.1f}pp"},
-        {"metrica": "Delta WR 20d (EMA - BASE)",    "valore": f"{avg_wr20_ema - avg_wr20_base:+.1f}pp"},
-        {"metrica": "[BASE] Miglior P&L",           "valore": best_pnl},
-        {"metrica": "[EMA]  Miglior P&L",           "valore": best_pnl_ema},
-        {"metrica": "LONG_THRESH",                  "valore": LONG_THRESH},
-        {"metrica": "SHORT_THRESH",                 "valore": SHORT_THRESH},
-        {"metrica": "Nota",                         "valore": "Score proxy su metriche yfinance reali, senza LLM"},
+        {"metrica": "Ticker",                            "valore": len(tickers)},
+        {"metrica": "Agenti (prod)",                     "valore": len(AGENTS) - 1},
+        {"metrica": "[BASE] Miglior WR 20d",             "valore": best_wr_base},
+        {"metrica": "[BASE] WR 20d medio",               "valore": f"{avg_wr20_base:.1f}%"},
+        {"metrica": "[BASE] WR 5d medio",                "valore": f"{avg_wr5_base:.1f}%"},
+        {"metrica": "[EMA]  Miglior WR 20d",             "valore": best_wr_ema},
+        {"metrica": "[EMA]  WR 20d medio",               "valore": f"{avg_wr20_ema:.1f}%"},
+        {"metrica": "[EMA]  WR 5d medio",                "valore": f"{avg_wr5_ema:.1f}%"},
+        {"metrica": "Delta WR 5d  (EMA - BASE)",         "valore": f"{avg_wr5_ema - avg_wr5_base:+.1f}pp"},
+        {"metrica": "Delta WR 20d (EMA - BASE)",         "valore": f"{avg_wr20_ema - avg_wr20_base:+.1f}pp"},
+        {"metrica": "[Fix7] PEG None (baseline)",        "valore": int(n_none_ext)},
+        {"metrica": "[Fix7] PEG recuperati",             "valore": int(n_recovered)},
+        {"metrica": "[Fix7] Delta WR_5d EMA (pp)",       "valore": f"{f7['win_rate_5d_ema_pct'] - b['win_rate_5d_ema_pct']:+.1f}"},
+        {"metrica": "[Fix7] Delta WR_20d EMA (pp)",      "valore": f"{f7['win_rate_20d_ema_pct'] - b['win_rate_20d_ema_pct']:+.1f}"},
+        {"metrica": "[BASE] Miglior P&L",                "valore": best_pnl},
+        {"metrica": "[EMA]  Miglior P&L",                "valore": best_pnl_ema},
+        {"metrica": "LONG_THRESH",                       "valore": LONG_THRESH},
+        {"metrica": "SHORT_THRESH",                      "valore": SHORT_THRESH},
+        {"metrica": "Nota",                              "valore": "Score proxy su metriche yfinance reali, senza LLM"},
     ]).to_csv(summ_path, index=False)
 
     print(f"\n  {scores_path}")
     print(f"  {comp_path}")
     print(f"  {summ_path}")
+    print(f"  {coverage_path}")
 
     print("\n" + "=" * 80)
-    print("  CLASSIFICA AGENTI — BASELINE vs FIX 5 (EMA Filter)")
+    print("  CLASSIFICA AGENTI — BASELINE vs EMA Filter  (agenti di produzione)")
     print("=" * 80)
     print(f"  {'Agente':25s}  {'WR5_B':>6}{'WR20_B':>7}  {'WR5_E':>6}{'WR20_E':>7}  {'D5':>4}{'D20':>4}  {'L_E':>4}{'S_E':>4}")
     print("  " + "-" * 80)
-    for _, r in agent_df.iterrows():
+    for _, r in prod_agents.iterrows():
         print(f"  {r['agent']:25s}  "
               f"{r['win_rate_5d_pct']:5.1f}% {r['win_rate_20d_pct']:6.1f}%  "
               f"{r['win_rate_5d_ema_pct']:5.1f}% {r['win_rate_20d_ema_pct']:6.1f}%  "
