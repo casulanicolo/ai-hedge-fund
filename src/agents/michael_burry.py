@@ -95,13 +95,31 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
             agent_id=agent_id,
         )
 
-        burry_direction = apply_ema_filter(burry_output.direction, state, ticker)
+        # Fix 6: in regime ELEVATED/CRISIS (VIX > 25) il filtro EMA viene bypassato.
+        # Burry e' un agente contrarian — il suo segnale e' piu' affidabile in mercati
+        # stressati dove i fondamentali dominano il momentum tecnico.
+        # In regime NORMAL il filtro EMA Fix 5 si applica normalmente.
+        vix_level = (
+            state.get("data", {})
+                 .get("devils_advocate_output", {})
+                 .get("vix_level", "NORMAL")
+        )
+        crisis_regime = vix_level in ("ELEVATED", "CRISIS")
+
+        if crisis_regime:
+            # Bypass EMA filter: usa la direzione LLM grezza
+            burry_direction = burry_output.direction
+        else:
+            # Regime normale: applica filtro EMA come tutti gli altri agenti fondamentali
+            burry_direction = apply_ema_filter(burry_output.direction, state, ticker)
+
         levels = compute_trade_levels(burry_direction, state, ticker)
         burry_analysis[ticker] = {
             "direction":       burry_direction,
             "expected_return": burry_output.expected_return,
             "confidence":      burry_output.confidence,
             "reasoning":       burry_output.reasoning,
+            "vix_regime":      vix_level,           # tracciabile nel dashboard
             **levels,
         }
 
