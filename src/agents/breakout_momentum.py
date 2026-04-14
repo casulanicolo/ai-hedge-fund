@@ -13,8 +13,16 @@ Metriche calcolate per ogni ticker:
   4. Resistance Breakout     — prezzo sopra il massimo degli ultimi 20gg (con volume)
   5. Weekly Trend Confirm    — trend weekly (EMA8 vs EMA21 su weekly candles)
   6. Momentum Score          — ROC 5gg e 10gg
+  7. RSI-14                  — penalità overbought (>70) su breakout UP e oversold (<30) su breakdown
 
 Segnale finale via LLM con contesto quantitativo.
+
+Fix 4 (2026-04-14):
+  - Aggiunta funzione _rsi() per calcolo RSI-14 (Wilder smoothing)
+  - Penalità -0.20 in _compute_breakout_score se RSI > 70 su breakout UP
+  - Penalità -0.20 se RSI < 30 su breakdown SHORT
+  - Peso resistance breakdown SHORT aumentato da 0.25 -> 0.30
+  - RSI incluso nelle metriche passate all'LLM e nei fallback messages
 """
 
 from __future__ import annotations
@@ -43,6 +51,8 @@ VOLUME_SURGE_THRESHOLD = 2.0    # Volume > 2x media 20gg = anomalo
 ATR_EXPANSION_THRESHOLD = 1.3   # ATR recente > 1.3x ATR 20gg fa = espansione
 BREAKOUT_LOOKBACK = 20          # gg per calcolare la resistenza
 HIGH_PROXIMITY_PCT = 0.05       # Entro il 5% dal 52w high = zona breakout
+RSI_OVERBOUGHT = 70             # RSI > 70: penalita su breakout UP (inseguire = rischio)
+RSI_OVERSOLD = 30               # RSI < 30: penalita su breakdown SHORT (inseguire = rischio)
 
 
 # ── Output strutturato ─────────────────────────────────────────────────────────
@@ -92,7 +102,7 @@ def _volume_surge_ratio(df: pd.DataFrame, lookback: int = 20) -> float:
 def _atr_expansion(df: pd.DataFrame, period: int = 14, lookback: int = 20) -> float:
     """
     Rapporto tra ATR corrente e ATR di 20 giorni fa.
-    Valori > 1.3 indicano espansione della volatilità (momentum nascente).
+    Valori > 1.3 indicano espansione della volatilita (momentum nascente).
     """
     if df is None or len(df) < period + lookback + 5:
         return 1.0
@@ -141,9 +151,9 @@ def _resistance_breakout(df: pd.DataFrame, lookback: int = BREAKOUT_LOOKBACK) ->
 
     Returns:
         {
-          "breakout_up":   bool  — prezzo > max degli ultimi N gg
-          "breakdown":     bool  — prezzo < min degli ultimi N gg
-          "distance_pct":  float — distanza % dal livello di resistenza
+          "breakout_up":   bool  -- prezzo > max degli ultimi N gg
+          "breakdown":     bool  -- prezzo < min degli ultimi N gg
+          "distance_pct":  float -- distanza % dal livello di resistenza
         }
     """
     if df is None or len(df) < lookback + 2:
@@ -203,12 +213,48 @@ def _momentum_roc(df: pd.DataFrame) -> dict:
         return {"roc_5d": 0.0, "roc_10d": 0.0}
 
 
+def _rsi(df: pd.DataFrame, period: int = 14) -> float:
+    """
+    RSI classico (Wilder smoothing) a N periodi sui prezzi di chiusura daily.
+    Returns: float in [0, 100], oppure 50.0 se dati insufficienti.
+
+    Fix 4: usato per penalizzare breakout UP in overbought (RSI > 70)
+    e breakdown SHORT in oversold (RSI < 30) — riduce il bias LONG strutturale.
+    """
+    if df is None or len(df) < period + 1:
+        return 50.0
+    try:
+        close = df["Close"].dropna()
+        if len(close) < period + 1:
+            return 50.0
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        # Wilder smoothing: EWM con alpha = 1/period
+        avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        last_gain = float(avg_gain.iloc[-1])
+        last_loss = float(avg_loss.iloc[-1])
+        if last_loss == 0:
+            return 100.0
+        rs = last_gain / last_loss
+        return round(100.0 - (100.0 / (1.0 + rs)), 2)
+    except Exception:
+        return 50.0
+
+
 def _compute_breakout_score(metrics: dict) -> float:
     """
     Score composito 0-1 che riflette la forza del segnale breakout.
-    Usato come pre-filtro (se score < 0.3 → neutral diretto senza LLM).
+    Usato come pre-filtro (se score < 0.20 -> neutral diretto senza LLM).
+
+    Fix 4 rispetto alla versione precedente:
+      - Peso resistance breakdown SHORT: 0.25 -> 0.30 (bilancia bias LONG)
+      - Penalita -0.20 se breakout_up e RSI > RSI_OVERBOUGHT (70)
+      - Penalita -0.20 se breakdown e RSI < RSI_OVERSOLD (30)
     """
     score = 0.0
+    rsi = metrics.get("rsi", 50.0)
 
     # Volume anomalo (+0.3)
     if metrics["volume_surge_ratio"] >= VOLUME_SURGE_THRESHOLD:
@@ -222,11 +268,11 @@ def _compute_breakout_score(metrics: dict) -> float:
     elif metrics["atr_expansion"] >= 1.1:
         score += 0.1
 
-    # Resistenza rotta con volume (+0.25)
+    # Resistenza rotta con volume — pesi differenziati UP/DOWN (Fix 4)
     if metrics["breakout_up"] and metrics["volume_surge_ratio"] >= 1.5:
-        score += 0.25
+        score += 0.25                      # breakout UP: peso invariato
     elif metrics["breakdown"] and metrics["volume_surge_ratio"] >= 1.5:
-        score += 0.25
+        score += 0.30                      # breakdown SHORT: peso 0.25 -> 0.30
 
     # 52w high proximity (+0.15)
     if metrics["high_proximity"] <= HIGH_PROXIMITY_PCT:
@@ -236,7 +282,16 @@ def _compute_breakout_score(metrics: dict) -> float:
     if abs(metrics["roc_5d"]) >= 3.0:
         score += 0.1
 
-    return round(min(score, 1.0), 3)
+    # ── Penalita RSI (Fix 4) ──────────────────────────────────────────────────
+    # Breakout UP in overbought: alta probabilita di pullback immediato
+    if metrics["breakout_up"] and rsi > RSI_OVERBOUGHT:
+        score -= 0.20
+
+    # Breakdown in oversold estremo: alta probabilita di rimbalzo tecnico
+    if metrics["breakdown"] and rsi < RSI_OVERSOLD:
+        score -= 0.20
+
+    return round(min(max(score, 0.0), 1.0), 3)
 
 
 # ── Main agent node ────────────────────────────────────────────────────────────
@@ -280,6 +335,7 @@ def breakout_momentum_agent(state: AgentState) -> dict:
         breakout = _resistance_breakout(daily_df)
         weekly_trend = _weekly_trend(weekly_df)
         roc = _momentum_roc(daily_df)
+        rsi_val = _rsi(daily_df)          # Fix 4: calcolo RSI-14
 
         metrics = {
             "volume_surge_ratio": vol_surge,
@@ -291,6 +347,7 @@ def breakout_momentum_agent(state: AgentState) -> dict:
             "weekly_trend": weekly_trend,
             "roc_5d": roc["roc_5d"],
             "roc_10d": roc["roc_10d"],
+            "rsi": rsi_val,               # Fix 4: RSI aggiunto alle metriche
         }
 
         composite_score = _compute_breakout_score(metrics)
@@ -300,7 +357,10 @@ def breakout_momentum_agent(state: AgentState) -> dict:
             signals[ticker] = {
                 "signal": "neutral",
                 "confidence": 10,
-                "reasoning": f"Nessun breakout rilevato. Volume surge: {vol_surge:.1f}x, ATR exp: {atr_exp:.2f}x.",
+                "reasoning": (
+                    f"Nessun breakout rilevato. Volume surge: {vol_surge:.1f}x, "
+                    f"ATR exp: {atr_exp:.2f}x, RSI: {rsi_val:.1f}."
+                ),
                 **compute_trade_levels("NEUTRAL", state, ticker),
             }
             progress.update_status(AGENT_ID, ticker, "No breakout — neutral (fast path)")
@@ -322,6 +382,11 @@ You analyze technical breakout signals and volume patterns to identify high-prob
 Your edge is detecting when institutional money moves into a ticker via price-volume confirmation.
 You ONLY analyze price action and volume — no fundamentals, no valuations.
 
+IMPORTANT: RSI is used as a confirmation filter.
+- A breakout_up with RSI > 70 means the ticker is already overbought — lower conviction for LONG.
+- A breakdown with RSI < 30 means the ticker is already oversold — lower conviction for SHORT.
+- RSI between 40-60 on a breakout provides the cleanest setups.
+
 Respond ONLY with valid JSON matching the schema provided."""
             ),
             (
@@ -338,12 +403,13 @@ BREAKOUT METRICS:
 - Weekly Trend:       {weekly_trend}
 - ROC 5d:             {roc_5d:+.1f}%
 - ROC 10d:            {roc_10d:+.1f}%
+- RSI-14:             {rsi:.1f}  (>70 = overbought, <30 = oversold, 40-60 = neutral zone)
 - Composite Score:    {composite_score:.2f}/1.0
 
 INTERPRETATION GUIDE:
-- bullish: breakout_up=True + volume_surge_ratio > 1.5 + weekly_trend=UP → momentum long setup
-- bearish: breakdown=True + volume_surge_ratio > 1.5 + weekly_trend=DOWN → momentum short setup
-- neutral: no confirmed breakout or conflicting signals
+- bullish: breakout_up=True + volume_surge_ratio > 1.5 + weekly_trend=UP + RSI < 70
+- bearish: breakdown=True + volume_surge_ratio > 1.5 + weekly_trend=DOWN + RSI > 30
+- neutral: no confirmed breakout, conflicting signals, or RSI extreme vs breakout direction
 
 Return JSON with signal, confidence (0-100), and reasoning."""
             ),
@@ -363,6 +429,7 @@ Return JSON with signal, confidence (0-100), and reasoning."""
                     "weekly_trend": metrics["weekly_trend"],
                     "roc_5d": metrics["roc_5d"],
                     "roc_10d": metrics["roc_10d"],
+                    "rsi": metrics["rsi"],
                     "composite_score": composite_score,
                 }).to_messages(),
                 pydantic_model=BreakoutSignal,
@@ -402,7 +469,7 @@ Return JSON with signal, confidence (0-100), and reasoning."""
                 "reasoning": (
                     f"Breakout score {composite_score:.2f}. Vol surge {metrics['volume_surge_ratio']:.1f}x. "
                     f"ATR exp {metrics['atr_expansion']:.2f}x. Weekly trend {metrics['weekly_trend']}. "
-                    f"(LLM fallback: {e})"
+                    f"RSI {metrics['rsi']:.1f}. (LLM fallback: {e})"
                 ),
                 "metrics": metrics,
                 "composite_score": composite_score,
