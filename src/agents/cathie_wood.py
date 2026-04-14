@@ -1,6 +1,7 @@
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.tools.api_shim import get_financial_metrics, get_market_cap, search_line_items, register_state
 from src.utils.trade_levels import compute_trade_levels
+from src.utils.ema_filter import apply_ema_filter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 import json
@@ -71,9 +72,10 @@ def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
             agent_id=agent_id,
         )
 
-        levels = compute_trade_levels(cw_output.direction, state, ticker)
+        cw_direction = apply_ema_filter(cw_output.direction, state, ticker)
+        levels = compute_trade_levels(cw_direction, state, ticker)
         cw_analysis[ticker] = {
-            "direction":       cw_output.direction,
+            "direction":       cw_direction,
             "expected_return": cw_output.expected_return,
             "confidence":      cw_output.confidence,
             "reasoning":       cw_output.reasoning,

@@ -1,6 +1,7 @@
 ﻿from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api_shim import get_market_cap, search_line_items, get_insider_trades, get_company_news, register_state
 from src.utils.trade_levels import compute_trade_levels
+from src.utils.ema_filter import apply_ema_filter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -132,7 +133,8 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
         )
 
         _dir_map = {"bullish": "LONG", "bearish": "SHORT", "neutral": "NEUTRAL"}
-        levels = compute_trade_levels(_dir_map.get(lynch_output.signal, "NEUTRAL"), state, ticker)
+        lynch_direction = apply_ema_filter(_dir_map.get(lynch_output.signal, "NEUTRAL"), state, ticker)
+        levels = compute_trade_levels(lynch_direction, state, ticker)
         lynch_analysis[ticker] = {
             "signal": lynch_output.signal,
             "confidence": lynch_output.confidence,

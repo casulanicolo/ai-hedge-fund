@@ -1,5 +1,6 @@
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from src.utils.trade_levels import compute_trade_levels
+from src.utils.ema_filter import apply_ema_filter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 import json
@@ -113,9 +114,10 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
             agent_id=agent_id,
         )
 
-        levels = compute_trade_levels(buffett_output.direction, state, ticker)
+        buffett_direction = apply_ema_filter(buffett_output.direction, state, ticker)
+        levels = compute_trade_levels(buffett_direction, state, ticker)
         buffett_analysis[ticker] = {
-            "direction":       buffett_output.direction,
+            "direction":       buffett_direction,
             "expected_return": buffett_output.expected_return,
             "confidence":      buffett_output.confidence,
             "reasoning":       buffett_output.reasoning,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 from src.utils.trade_levels import compute_trade_levels
+from src.utils.ema_filter import apply_ema_filter
 
 from src.graph.state import AgentState, AgentOutput, show_agent_reasoning
 from langchain_core.messages import HumanMessage
@@ -94,9 +95,10 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
             agent_id=agent_id,
         )
 
-        levels = compute_trade_levels(burry_output.direction, state, ticker)
+        burry_direction = apply_ema_filter(burry_output.direction, state, ticker)
+        levels = compute_trade_levels(burry_direction, state, ticker)
         burry_analysis[ticker] = {
-            "direction":       burry_output.direction,
+            "direction":       burry_direction,
             "expected_return": burry_output.expected_return,
             "confidence":      burry_output.confidence,
             "reasoning":       burry_output.reasoning,
