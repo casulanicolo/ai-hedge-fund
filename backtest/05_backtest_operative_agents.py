@@ -481,14 +481,14 @@ def score_mohnish_pabrai(m: dict) -> float:
         elif de_frac < 0.7: score += 4
         elif de_frac > 1.5: score -= 8
 
-    # Valuation (peso 35%)
+    # Valuation (peso 35%) — Fix 8: soglie abbassate
     fcf = safe(m["fcf_yield"])
     if fcf is not None:
-        if fcf > 0.10:   score += 12
-        elif fcf > 0.07: score += 8
-        elif fcf > 0.05: score += 5
-        elif fcf > 0.03: score += 2
-        elif fcf < 0:    score -= 10
+        if fcf > 0.06:    score += 12
+        elif fcf > 0.045: score += 8
+        elif fcf > 0.03:  score += 5
+        elif fcf > 0.02:  score += 2
+        elif fcf < 0:     score -= 10
 
     # Doubling potential (peso 20%)
     rg = safe(m["revenue_growth"])
@@ -912,7 +912,11 @@ def run_backtest():
         peg_val, peg_src = _compute_peg_internal(m)
         for agent_name, score_fn in AGENTS.items():
             s        = score_fn(m)
-            dir_raw  = direction(s)
+            # Fix 8A: mohnish_pabrai uses lowered LONG threshold (58 vs 62)
+            if agent_name in ("mohnish_pabrai",):
+                dir_raw = "LONG" if s >= 58.0 else ("SHORT" if s <= SHORT_THRESH else "NEUTRAL")
+            else:
+                dir_raw  = direction(s)
             dir_filt = apply_ema_filter_backtest(dir_raw, ema_trend)
             rows.append({
                 "agent":              agent_name,

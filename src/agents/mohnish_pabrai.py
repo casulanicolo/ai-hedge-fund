@@ -83,7 +83,9 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
         )
         max_score = 10
 
-        if total_score >= 7.5:
+        # Fix 8A: soglia bullish abbassata da 7.5 a 6.5 (aumenta copertura LONG)
+        # Equivalente a LONG_THRESH 58 su scala 0-100 del backtest
+        if total_score >= 6.5:
             signal = "bullish"
         elif total_score <= 4.0:
             signal = "bearish"
@@ -217,16 +219,19 @@ def analyze_pabrai_valuation(financial_line_items: list, market_cap: float | Non
     fcf_yield = normalized_fcf / market_cap
 
     score = 0
-    if fcf_yield > 0.10:
+    # Fix 8: soglie FCF yield abbassate per aumentare copertura LONG
+    # Vecchie: >10% / >7% / >5% / >3%
+    # Nuove:   > 6% / >4.5% / >3% / >2%
+    if fcf_yield > 0.06:
         score += 4
         details.append(f"Exceptional value: {fcf_yield:.1%} FCF yield")
-    elif fcf_yield > 0.07:
+    elif fcf_yield > 0.045:
         score += 3
         details.append(f"Attractive value: {fcf_yield:.1%} FCF yield")
-    elif fcf_yield > 0.05:
+    elif fcf_yield > 0.03:
         score += 2
         details.append(f"Reasonable value: {fcf_yield:.1%} FCF yield")
-    elif fcf_yield > 0.03:
+    elif fcf_yield > 0.02:
         score += 1
         details.append(f"Borderline value: {fcf_yield:.1%} FCF yield")
     else:
