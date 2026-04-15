@@ -6,11 +6,18 @@ and updates agent_weights using Exponential Weighted Average (EWA).
 Formula: w_new = alpha * performance_score + (1 - alpha) * w_old
 - alpha = 0.15 (learning rate)
 - floor = 0.05 (minimum weight, no agent is ever fully silenced)
+- ceiling = 2.0 (maximum weight, A5 audit — prevents runaway upward drift)
 
 Performance score (0.0 — 1.0) combines:
   - hit_rate:          fraction of directional calls that were correct
   - avg_return:        mean actual return when the signal was correct
   - inverse_drawdown:  1 / (1 + max single-prediction loss), penalises big misses
+
+A5 Audit (2026-04-15):
+  - Added CEILING = 2.0: w_new is capped at 2.0 after every EWA update.
+  - Added MIN_OBSERVATIONS = 30: if a (agent_id, ticker) pair has fewer than
+    30 outcome rows, the weight is NOT updated and stays at DEFAULT_WEIGHT (1.0).
+    This prevents the EWA from over-fitting on a handful of samples.
 
 Run standalone:
     python -m src.feedback.weight_adjuster
@@ -26,8 +33,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 DB_PATH = Path("db/hedge_fund.db")
 
-ALPHA = 0.15   # EWA learning rate
-FLOOR = 0.05   # minimum weight floor
+ALPHA = 0.15          # EWA learning rate
+FLOOR = 0.05          # minimum weight floor
+CEILING = 2.0         # maximum weight ceiling (A5)
+MIN_OBSERVATIONS = 30 # minimum outcome rows before updating weight (A5)
 DEFAULT_WEIGHT = 1.0  # weight assigned to new agents with no history
 
 # Whitelist of currently active agents.
@@ -85,11 +94,14 @@ def _return_direction(actual_return: float) -> int:
 # Core: performance score for one (agent_id, ticker) pair
 # ---------------------------------------------------------------------------
 
-def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connection) -> float | None:
+def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connection) -> tuple[float | None, int]:
     """
     Compute a composite performance score in [0, 1] for one (agent_id, ticker).
 
-    Returns None if there are no outcome rows available yet.
+    Returns:
+        (score, n_obs) where:
+          - score is None if there are no usable outcome rows
+          - n_obs is the total number of outcome rows found (including unusable ones)
 
     The score is built from three components weighted equally (1/3 each):
       1. hit_rate       — fraction of directional calls that matched the actual move
@@ -110,9 +122,10 @@ def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connecti
           AND p.ticker   = ?
     """
     rows = conn.execute(query, (agent_id, ticker)).fetchall()
+    n_obs = len(rows)
 
     if not rows:
-        return None
+        return None, 0
 
     # For each row pick the non-NULL return value (only one column is filled per row)
     results = []
@@ -131,7 +144,7 @@ def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connecti
         results.append((signal_dir, actual))
 
     if not results:
-        return None
+        return None, n_obs
 
     # --- hit rate ---
     # HOLD signals are scored as neutral (not a miss, not a hit)
@@ -173,7 +186,7 @@ def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connecti
         f"avg_return_score={avg_return_score:.2f}, inv_drawdown={inv_drawdown:.2f} "
         f"→ score={score:.4f}"
     )
-    return score
+    return score, n_obs
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +196,12 @@ def compute_performance_score(agent_id: str, ticker: str, conn: sqlite3.Connecti
 def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
     """
     Update the agent_weights table for every (agent_id, ticker) pair
-    that has at least one outcome row AND belongs to active agents/tickers.
+    that has at least MIN_OBSERVATIONS outcome rows AND belongs to active agents/tickers.
+
+    A5 changes:
+      - Pairs with fewer than MIN_OBSERVATIONS (30) rows are skipped — weight
+        stays at DEFAULT_WEIGHT (1.0 prior) to avoid over-fitting on sparse data.
+      - After EWA update, w_new is capped at CEILING (2.0) to prevent runaway drift.
 
     Returns a summary dict: { (agent_id, ticker): new_weight }
 
@@ -227,7 +245,17 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
                 continue
 
             # Compute performance score for this pair
-            score = compute_performance_score(agent_id, ticker, conn)
+            score, n_obs = compute_performance_score(agent_id, ticker, conn)
+
+            # A5: skip pairs with fewer than MIN_OBSERVATIONS rows
+            if n_obs < MIN_OBSERVATIONS:
+                logger.info(
+                    f"  Skipping {agent_id}/{ticker} — only {n_obs} observations "
+                    f"(min required: {MIN_OBSERVATIONS}). Weight stays at prior."
+                )
+                skipped += 1
+                continue
+
             if score is None:
                 logger.info(f"  Skipping {agent_id}/{ticker} — no usable outcome data.")
                 continue
@@ -242,7 +270,8 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
 
             # EWA update
             w_new = alpha * score + (1.0 - alpha) * w_old
-            w_new = max(w_new, floor)  # enforce minimum floor
+            w_new = max(w_new, floor)    # enforce minimum floor
+            w_new = min(w_new, CEILING)  # A5: enforce maximum ceiling
 
             # Upsert into agent_weights
             conn.execute(
@@ -261,12 +290,12 @@ def adjust_weights(alpha: float = ALPHA, floor: float = FLOOR) -> dict:
 
             summary[(agent_id, ticker)] = w_new
             logger.info(
-                f"  {agent_id:35s} / {ticker:6s}: "
+                f"  {agent_id:35s} / {ticker:6s}: n_obs={n_obs:3d}, "
                 f"score={score:.4f}, w_old={w_old:.4f} → w_new={w_new:.4f}"
             )
 
         if skipped:
-            logger.info(f"Skipped {skipped} pair(s) belonging to inactive agents or tickers.")
+            logger.info(f"Skipped {skipped} pair(s) — inactive, insufficient data, or no outcomes.")
 
         # Final safeguard commit (no-op if all per-pair commits succeeded).
         conn.commit()
