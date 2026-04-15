@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 def detect_macro_regime() -> dict:
     """
     Scarica il VIX da yfinance e classifica il regime macro:
-      - RISK_ON   (VIX < 25): mercato tranquillo, sizing normale
-      - CAUTION   (VIX 25-35): volatilità elevata, sizing ridotto del 30%
-      - RISK_OFF  (VIX > 35): paura/crisi, evitare nuovi long
+      - RISK_ON   (VIX < 25, da config): mercato tranquillo, sizing normale
+      - CAUTION   (VIX 25-35, da config): volatilità elevata, sizing ridotto del 30%
+      - RISK_OFF  (VIX > 35, da config): paura/crisi, evitare nuovi long
+    Soglie lette da config/risk_params.yaml → vix_thresholds (elevated/high).
 
     Returns:
         dict con:
@@ -45,18 +46,29 @@ def detect_macro_regime() -> dict:
             "description": "VIX non disponibile — regime CAUTION per precauzione.",
         }
 
-    if vix < 25:
+    # Carica soglie canoniche da config
+    vix_t = {"elevated": 25, "high": 35}
+    try:
+        import yaml
+        with open("config/risk_params.yaml", "r") as _f:
+            _loaded = yaml.safe_load(_f)
+        if isinstance(_loaded, dict) and "vix_thresholds" in _loaded:
+            vix_t.update(_loaded["vix_thresholds"])
+    except Exception:
+        pass
+
+    if vix < vix_t["elevated"]:
         regime = "RISK_ON"
         multiplier = 1.0
-        desc = f"VIX {vix:.1f} < 25 — mercato tranquillo, sizing pieno."
-    elif vix <= 35:
+        desc = f"VIX {vix:.1f} < {vix_t['elevated']} — mercato tranquillo, sizing pieno."
+    elif vix <= vix_t["high"]:
         regime = "CAUTION"
         multiplier = 0.7
-        desc = f"VIX {vix:.1f} tra 25-35 — volatilità elevata, sizing ridotto al 70%."
+        desc = f"VIX {vix:.1f} tra {vix_t['elevated']}-{vix_t['high']} — volatilità elevata, sizing ridotto al 70%."
     else:
         regime = "RISK_OFF"
         multiplier = 0.3
-        desc = f"VIX {vix:.1f} > 35 — paura/crisi, sizing ridotto al 30%."
+        desc = f"VIX {vix:.1f} > {vix_t['high']} — paura/crisi, sizing ridotto al 30%."
 
     return {
         "macro_regime": regime,

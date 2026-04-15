@@ -125,22 +125,40 @@ def _fetch_vix(state: AgentState) -> float:
         return DEFAULT_VIX
 
 
+def _load_vix_thresholds() -> dict:
+    """
+    Carica le soglie VIX canoniche da config/risk_params.yaml.
+    Fallback ai valori canonici se il file non è disponibile.
+    """
+    defaults = {"low": 18, "elevated": 25, "high": 35, "extreme": 40}
+    try:
+        import yaml
+        with open("config/risk_params.yaml", "r") as f:
+            loaded = yaml.safe_load(f)
+        if isinstance(loaded, dict) and "vix_thresholds" in loaded:
+            defaults.update(loaded["vix_thresholds"])
+    except Exception:
+        pass
+    return defaults
+
+
 def _classify_vix(vix_level: float) -> tuple[str, float, str]:
     """
     Classifica il VIX in un regime e restituisce:
       (vix_regime, size_multiplier, macro_risk)
 
-    Tabella aggiornata:
-      VIX < 15  → LOW      → multiplier=1.00 → macro_risk=LOW
-      VIX 15-30 → ELEVATED → multiplier=0.85 → macro_risk=LOW
-      VIX 30-40 → HIGH     → multiplier=0.70 → macro_risk=MEDIUM
-      VIX > 40  → EXTREME  → multiplier=0.40 → macro_risk=HIGH
+    Soglie canoniche da config/risk_params.yaml (vix_thresholds):
+      VIX < low      (18)  → LOW      → multiplier=1.00 → macro_risk=LOW
+      VIX low-elevated(25) → ELEVATED → multiplier=0.85 → macro_risk=LOW
+      VIX elevated-high(35)→ HIGH     → multiplier=0.70 → macro_risk=MEDIUM
+      VIX > high     (35)  → EXTREME  → multiplier=0.40 → macro_risk=HIGH
     """
-    if vix_level < 15:
+    t = _load_vix_thresholds()
+    if vix_level < t["low"]:
         return "LOW", 1.00, "LOW"
-    elif vix_level < 30:
+    elif vix_level < t["elevated"]:
         return "ELEVATED", 0.85, "LOW"
-    elif vix_level < 40:
+    elif vix_level < t["high"]:
         return "HIGH", 0.70, "MEDIUM"
     else:
         return "EXTREME", 0.40, "HIGH"
@@ -152,20 +170,22 @@ def _classify_vix(vix_level: float) -> tuple[str, float, str]:
 
 def _get_coherence_threshold(vix_level: float) -> float:
     """
-    Restituisce la soglia di coerenza dinamica in base al livello VIX:
-      VIX < 18  (LOW):      0.45  – mercato calmo, accettiamo meno consensus
-      VIX 18-25 (NORMAL):   0.55  – soglia standard
-      VIX 25-35 (ELEVATED): 0.60  – volatilità elevata, richiediamo più agreement
-      VIX > 35  (CRISIS):   0.65  – crisi, standard molto alto
+    Restituisce la soglia di coerenza dinamica in base al livello VIX.
+    Soglie canoniche da config/risk_params.yaml (vix_thresholds):
+      VIX < low      (18)  → 0.45  – mercato calmo, accettiamo meno consensus
+      VIX low-elevated(25) → 0.55  – soglia standard
+      VIX elevated-high(35)→ 0.60  – volatilità elevata, richiediamo più agreement
+      VIX > high     (35)  → 0.65  – crisi, standard molto alto
 
     Impatto atteso: riduce false rejection in regime LOW,
     aumenta protezione in regime ELEVATED/CRISIS.
     """
-    if vix_level < 18:
+    t = _load_vix_thresholds()
+    if vix_level < t["low"]:
         return 0.45
-    elif vix_level < 25:
+    elif vix_level < t["elevated"]:
         return 0.55
-    elif vix_level < 35:
+    elif vix_level < t["high"]:
         return 0.60
     else:
         return 0.65
