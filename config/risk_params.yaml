@@ -5,7 +5,7 @@
 target_daily_vol: 0.01       # volatilità target giornaliera del portafoglio (1%)
 
 # Half-Kelly
-kelly_fraction: 0.5          # usa Half-Kelly (50% del Kelly intero)
+kelly_fraction: 0.25         # usa Quarter-Kelly (25% del Kelly intero)
 
 # Position Limits
 max_position_pct: 0.15       # nessuna posizione supera il 15% del portafoglio
@@ -16,3 +16,10 @@ wc_threshold: 0.008          # soglia minima Weighted Conviction per entrare in 
 
 # Sector Cap (Fase 6 - già incluso per completezza)
 sector_cap: 0.30             # massimo 30% esposto su un singolo settore
+
+# VIX Thresholds (canonical — tutti i file del codebase devono leggere da qui)
+vix_thresholds:
+  low: 18        # VIX < 18: regime tranquillo
+  elevated: 25   # VIX 18-25: regime elevato
+  high: 35       # VIX 25-35: regime alto
+  extreme: 40    # VIX > 35: regime estremo / crisi
