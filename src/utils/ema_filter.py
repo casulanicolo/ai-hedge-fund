@@ -8,7 +8,13 @@ Fix 5 (2026-04-14):
   per correggere il WR_5d sistematicamente < 50% causato dall'incompatibilita
   tra orizzonte fondamentale (mesi) e swing 3-4gg.
 
-Logica:
+A4 Audit (2026-04-15):
+  Aggiunto flag use_ema_filter in config/risk_params.yaml.
+  Se use_ema_filter: false, apply_ema_filter restituisce la direzione grezza
+  senza alcuna modifica (filtro disabilitato).
+  Backtest: win rate 46.3% (no filter) vs 41.5% (with filter) → disabled.
+
+Logica (quando abilitato):
   - EMA8 > EMA21 (trend UP)   → LONG passa, SHORT diventa NEUTRAL
   - EMA8 < EMA21 (trend DOWN) → SHORT passa, LONG diventa NEUTRAL
   - NEUTRAL non viene mai modificato
@@ -21,8 +27,40 @@ Uso:
 
 from __future__ import annotations
 
-import pandas as pd
+import os
+from pathlib import Path
 
+import pandas as pd
+import yaml
+
+
+# ---------------------------------------------------------------------------
+# Config loader — legge use_ema_filter da config/risk_params.yaml
+# ---------------------------------------------------------------------------
+
+def _load_ema_filter_flag() -> bool:
+    """
+    Legge il flag use_ema_filter da config/risk_params.yaml.
+    Default: True (filtro abilitato) se il file non esiste o il flag manca.
+    """
+    try:
+        config_path = Path(__file__).resolve().parents[2] / "config" / "risk_params.yaml"
+        if not config_path.exists():
+            return True  # fail-safe: abilita filtro se config assente
+        with open(config_path, "r", encoding="utf-8") as f:
+            params = yaml.safe_load(f) or {}
+        return bool(params.get("use_ema_filter", True))
+    except Exception:
+        return True  # fail-safe
+
+
+# Cache del flag a livello di modulo (evita I/O ripetuto per ogni ticker)
+_USE_EMA_FILTER: bool = _load_ema_filter_flag()
+
+
+# ---------------------------------------------------------------------------
+# EMA trend helper
+# ---------------------------------------------------------------------------
 
 def _get_ema_trend(state: dict, ticker: str) -> str:
     """
@@ -72,9 +110,16 @@ def _get_ema_trend(state: dict, ticker: str) -> str:
         return "FLAT"
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def apply_ema_filter(direction: str, state: dict, ticker: str) -> str:
     """
     Applica il filtro EMA alla direzione grezza prodotta dall'agente fondamentale.
+
+    Se il flag use_ema_filter in config/risk_params.yaml è False,
+    restituisce la direzione grezza invariata (filtro disabilitato).
 
     Args:
         direction: "LONG" | "SHORT" | "NEUTRAL"
@@ -82,9 +127,9 @@ def apply_ema_filter(direction: str, state: dict, ticker: str) -> str:
         ticker:    simbolo del ticker
 
     Returns:
-        Direzione filtrata: "LONG" | "SHORT" | "NEUTRAL"
+        Direzione filtrata (o grezza se filtro disabilitato): "LONG" | "SHORT" | "NEUTRAL"
 
-    Regole:
+    Regole (quando abilitato):
         NEUTRAL  → NEUTRAL (invariato)
         LONG  + trend UP   → LONG   (confermato)
         LONG  + trend DOWN → NEUTRAL (filtrato: trend contrario)
@@ -93,6 +138,10 @@ def apply_ema_filter(direction: str, state: dict, ticker: str) -> str:
         SHORT + trend UP   → NEUTRAL (filtrato: trend contrario)
         SHORT + trend FLAT → SHORT  (fail-safe)
     """
+    # --- A4: rispetta il flag di configurazione ---
+    if not _USE_EMA_FILTER:
+        return direction  # filtro disabilitato: passa direzione grezza
+
     if direction == "NEUTRAL":
         return "NEUTRAL"
 

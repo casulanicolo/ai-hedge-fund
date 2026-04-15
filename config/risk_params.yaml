@@ -23,3 +23,6 @@ vix_thresholds:
   elevated: 25   # VIX 18-25: regime elevato
   high: 35       # VIX 25-35: regime alto
   extreme: 40    # VIX > 35: regime estremo / crisi
+
+# EMA Filter (A4 audit — disabled: backtest shows win rate drop 46.3% → 41.5%)
+use_ema_filter: false
