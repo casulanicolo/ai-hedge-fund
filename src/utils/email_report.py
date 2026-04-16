@@ -283,10 +283,14 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str, weighted: dict
     n_long          = portfolio.get("n_long", 0)
     n_short         = portfolio.get("n_short", 0)
     n_hold          = portfolio.get("n_hold", 0)
-    daily_var       = risk_report.get("daily_var_95", 0.0)
-    max_dd          = risk_report.get("max_drawdown_estimate", 0.0)
-    warnings        = risk_report.get("warnings", [])
-    risk_ok         = risk_report.get("risk_ok", True)
+    daily_var          = risk_report.get("daily_var_95", 0.0)
+    daily_var_equity   = risk_report.get("daily_var_equity", 0.0)
+    daily_var_crypto   = risk_report.get("daily_var_crypto", 0.0)
+    crypto_exposure    = risk_report.get("crypto_exposure_pct", 0.0)
+    crypto_tickers     = risk_report.get("crypto_tickers_approved", [])
+    max_dd             = risk_report.get("max_drawdown_estimate", 0.0)
+    warnings           = risk_report.get("warnings", [])
+    risk_ok            = risk_report.get("risk_ok", True)
 
     trade_rows  = _trade_plan_rows(recs)
     info_rows   = _info_signals_rows(recs, weighted or {})
@@ -346,6 +350,10 @@ def build_html(portfolio: dict, risk_report: dict, run_date: str, weighted: dict
           <td style="text-align:center;">
             <div style="font-size:16px;font-weight:700;color:#c47a00;">{daily_var*100:.1f}%</div>
             <div style="font-size:11px;color:#666;text-transform:uppercase;">VaR 95%</div>
+          </td>
+          <td style="text-align:center;">
+            <div style="font-size:14px;font-weight:700;color:#9467bd;">{crypto_exposure:.1f}%</div>
+            <div style="font-size:11px;color:#666;text-transform:uppercase;">Crypto Exp.</div>
           </td>
           <td style="text-align:center;">
             <div style="font-size:16px;font-weight:700;color:#c47a00;">{max_dd*100:.1f}%</div>

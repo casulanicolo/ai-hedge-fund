@@ -77,6 +77,13 @@ MAX_DRAWDOWN_LIMIT = 0.15      # >15% estimated drawdown → warning
 MAX_SINGLE_TICKER_PCT = 0.25   # single ticker >25% sizing → warning
 MAX_SINGLE_VAR = 0.04          # single ticker VaR > 4% → blocked from bullish_approved
 
+# ── Crypto risk model (B6) ─────────────────────────────────────────────────────
+# Tickers trattati come crypto nel risk model: VaR separato + position cap ridotto
+CRYPTO_TICKERS: set = {
+    "BTC-USD", "ETH-USD", "SOL-USD", "MSTR", "COIN"
+}
+MAX_CRYPTO_POSITION_PCT: float = 0.02   # max 2% del portafoglio per ticker crypto
+
 # ── Trade level parameters ─────────────────────────────────────────────────────
 ATR_PERIOD  = 14    # ATR lookback (Wilder's smoothing)
 ATR_SL_MULT = 1.0   # Stop Loss = entry ± 1×ATR
@@ -533,13 +540,45 @@ def risk_manager_agent(state: AgentState) -> dict:
     sector_fractions = _sector_concentration(bullish_approved)
     concentrated_sectors = {s: f for s, f in sector_fractions.items() if f > MAX_SECTOR_PCT}
 
-    # ── 6. VaR (Historical / empirical) ───────────────────────────────────────
-    progress.update_status(AGENT_ID, None, "Computing historical VaR")
+    # ── 6. VaR separato equity / crypto (B6) ────────────────────────────────────
+    progress.update_status(AGENT_ID, None, "Computing historical VaR (equity + crypto split)")
     try:
-        daily_var = _historical_var(returns, eq_weights)
+        # Separa i ticker bullish approvati in equity e crypto
+        eq_tickers_approved   = [t for t in bullish_approved if t not in CRYPTO_TICKERS]
+        cryp_tickers_approved = [t for t in bullish_approved if t in CRYPTO_TICKERS]
+
+        # VaR equity
+        if eq_tickers_approved:
+            eq_w = {t: 1.0 / len(eq_tickers_approved) for t in eq_tickers_approved}
+            daily_var_equity = _historical_var(returns, eq_w)
+        else:
+            daily_var_equity = 0.0
+
+        # VaR crypto
+        if cryp_tickers_approved:
+            cr_w = {t: 1.0 / len(cryp_tickers_approved) for t in cryp_tickers_approved}
+            daily_var_crypto = _historical_var(returns, cr_w)
+        else:
+            daily_var_crypto = 0.0
+
+        # VaR totale = somma ponderata (peso crypto = MAX_CRYPTO_POSITION_PCT * n_crypto)
+        n_eq   = len(eq_tickers_approved)
+        n_cryp = len(cryp_tickers_approved)
+        n_tot  = n_eq + n_cryp
+        if n_tot > 0:
+            crypto_weight = min(1.0, n_cryp * MAX_CRYPTO_POSITION_PCT)
+            equity_weight = 1.0 - crypto_weight
+            daily_var = round(equity_weight * daily_var_equity + crypto_weight * daily_var_crypto, 4)
+        else:
+            daily_var = _historical_var(returns, eq_weights)
+
     except Exception as e:
         logger.warning("risk_manager: errore nel calcolo VaR storico — %s", e)
-        daily_var = 0.0
+        daily_var        = 0.0
+        daily_var_equity = 0.0
+        daily_var_crypto = 0.0
+        eq_tickers_approved   = []
+        cryp_tickers_approved = []
 
     # ── 7. Max drawdown estimate ───────────────────────────────────────────────
     try:
@@ -626,6 +665,19 @@ def risk_manager_agent(state: AgentState) -> dict:
     elif macro_regime["macro_regime"] == "CAUTION":
         warnings.append(f"MACRO CAUTION: {macro_regime['description']}")
 
+    # ── 11b. Crypto exposure warning (B6) ────────────────────────────────────
+    crypto_exposure_pct = round(len(cryp_tickers_approved) * MAX_CRYPTO_POSITION_PCT * 100, 1)
+    if cryp_tickers_approved:
+        logger.info(
+            "[%s] Crypto tickers approvati: %s | Esposizione stimata: %.1f%%",
+            AGENT_ID, cryp_tickers_approved, crypto_exposure_pct,
+        )
+        if crypto_exposure_pct > 10.0:
+            warnings.append(
+                f"Crypto exposure: {crypto_exposure_pct:.1f}% "
+                f"({cryp_tickers_approved}) — soglia 10% superata"
+            )
+
     # ── 12. Assemble risk report ───────────────────────────────────────────────
     risk_report = {
         "signal_summary": agg,
@@ -639,6 +691,11 @@ def risk_manager_agent(state: AgentState) -> dict:
         "sector_concentration": sector_fractions,
         "concentrated_sectors": concentrated_sectors,
         "daily_var_95": daily_var,
+        "daily_var_equity": daily_var_equity,           # B6: VaR solo equity
+        "daily_var_crypto": daily_var_crypto,           # B6: VaR solo crypto
+        "crypto_tickers_approved": cryp_tickers_approved,  # B6: crypto bullish approvati
+        "crypto_exposure_pct": crypto_exposure_pct,    # B6: % portafoglio stimata in crypto
+        "equity_tickers_approved": eq_tickers_approved, # B6: equity bullish approvati
         "max_drawdown_estimate": max_dd,
         "correlation_matrix": corr_matrix,
         "ticker_flags": ticker_flags,
