@@ -1,0 +1,15 @@
+agente,n_trades,win_rate,avg_win_pct,avg_loss_pct,EV_lordo,avg_cost_rt_pct,EV_netto_costi,verdict
+aswath_damodaran,437,58.4,9.287,6.753,2.6069,0.102,2.5051,KEEP
+ben_graham,490,57.1,8.856,6.457,2.2933,0.116,2.1774,KEEP
+bill_ackman,820,56.6,8.037,5.918,1.9785,0.101,1.8775,KEEP
+cathie_wood,661,57.5,10.585,7.173,3.0361,0.125,2.911,KEEP
+charlie_munger,925,55.6,8.653,6.38,1.9734,0.106,1.8671,KEEP
+growth_agent,795,56.7,8.867,6.362,2.2777,0.111,2.1666,KEEP
+michael_burry,758,57.4,8.752,6.929,2.0701,0.101,1.969,KEEP
+mohnish_pabrai,666,57.8,11.478,7.554,3.4481,0.12,3.3277,KEEP
+peter_lynch,446,57.4,10.905,7.103,3.2335,0.12,3.1138,KEEP
+peter_lynch_fix7,481,58.4,10.111,7.243,2.8953,0.118,2.777,KEEP
+phil_fisher,900,56.9,8.328,6.06,2.1253,0.11,2.0156,KEEP
+rakesh_jhunjhunwala,683,58.0,9.2,6.354,2.6643,0.101,2.5631,KEEP
+stanley_druckenmiller,930,55.1,8.971,6.878,1.8478,0.116,1.7319,KEEP
+warren_buffett,997,55.2,8.484,6.336,1.8396,0.108,1.7314,KEEP
