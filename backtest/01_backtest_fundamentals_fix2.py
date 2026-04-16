@@ -1,27 +1,25 @@
 """
-01_backtest_fundamentals_fix2.py  –  Athanor Alpha | Fix 2 Validation
+01_backtest_fundamentals_fix2.py  —  Athanor Alpha | Fix 2 Validation + Fix B5
 ============================================================
 Confronto: score_debt_equity (originale) vs score_debt_to_assets (Fix 2) per ticker Financials.
 
-Testa la logica di scoring SENZA chiamare LLM:
-  - score_revenue_growth
-  - score_operating_margin
-  - score_fcf_yield
-  - score_debt_equity
-  - score_insider_activity
-  - composite score
+Fix B5 (look-ahead bias):
+  - Aggiunta funzione filter_fundamentals_by_date(df, backtest_date) che filtra
+    le colonne dei DataFrame trimestrali tenendo solo i periodi con
+    period_end_date + 45 giorni <= backtest_date.
+  # LAG ASSUMPTION: fundamentals assumed available 45 days after quarter end to avoid look-ahead bias
 
 Output:
-  backtest/results/01_fundamentals_scores.csv
-  backtest/results/01_fundamentals_summary.csv
+  backtest/results/01_fundamentals_scores_fix2.csv
+  backtest/results/01_fundamentals_summary_fix2.csv
 
-Esegui: python backtest/01_backtest_fundamentals.py
+Esegui: python backtest/01_backtest_fundamentals_fix2.py
 """
 
 import os
 import sys
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -53,15 +51,51 @@ SECTOR_MAP = {
     "MSTR": "Crypto-Proxy",  "PLTR": "Technology",
 }
 
-
 FINANCIALS_TICKERS: frozenset[str] = frozenset({
     "JPM", "GS", "MS", "BAC", "C", "WFC",
     "V", "MA", "AXP", "PYPL",
     "BLK", "SCHW", "BX",
 })
 
+# LAG ASSUMPTION: fundamentals assumed available 45 days after quarter end to avoid look-ahead bias
+REPORTING_LAG_DAYS = 45
 
-# ── Scoring (identiche a src/agents/fundamentals.py) ─────────────────────────
+
+# ── Fix B5: look-ahead bias filter ────────────────────────────────────────────
+
+def filter_fundamentals_by_date(df: pd.DataFrame, backtest_date: datetime) -> pd.DataFrame:
+    """
+    Filtra le colonne di un DataFrame trimestrale yfinance tenendo solo i periodi
+    con period_end_date + REPORTING_LAG_DAYS <= backtest_date.
+
+    yfinance restituisce le colonne con la data di fine periodo come Timestamp.
+    Utilizziamo period_end + 45gg come stima conservativa del ritardo di
+    pubblicazione 10-K/10-Q (proxy per data di disponibilità pubblica).
+
+    # LAG ASSUMPTION: fundamentals assumed available 45 days after quarter end to avoid look-ahead bias
+
+    Args:
+        df:             DataFrame trimestrale (colonne = Timestamp periodo)
+        backtest_date:  Data di riferimento del backtest
+
+    Returns:
+        DataFrame filtrato (solo colonne disponibili a backtest_date).
+        Se nessuna colonna è disponibile, restituisce DataFrame vuoto.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    cutoff = pd.Timestamp(backtest_date)
+    valid_cols = [
+        col for col in df.columns
+        if isinstance(col, pd.Timestamp) and (col + timedelta(days=REPORTING_LAG_DAYS)) <= cutoff
+    ]
+    if not valid_cols:
+        return pd.DataFrame()
+    return df[valid_cols]
+
+
+# ── Scoring (identiche a src/agents/fundamentals.py) ──────────────────────────
 
 def score_revenue_growth(incq):
     raw = {}
@@ -201,11 +235,11 @@ def direction_from_composite(composite):
     return "NEUTRAL"
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_backtest():
     print("=" * 65)
-    print("  ATHANOR ALPHA – Fix 2 Validation | Fundamentals: debt_to_assets per Financials")
+    print("  ATHANOR ALPHA — Fix 2 + Fix B5 | Fundamentals: debt_to_assets + look-ahead filter")
     print(f"  Eseguito: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 65)
 
@@ -214,6 +248,12 @@ def run_backtest():
         print("  Esegui prima:  python backtest/00_download_data.py")
         sys.exit(1)
 
+    # Fix B5: backtest_date = oggi (snapshot statico).
+    # Con Fix B1 questo diventerà una variabile iterata su date storiche.
+    # LAG ASSUMPTION: fundamentals assumed available 45 days after quarter end to avoid look-ahead bias
+    backtest_date = datetime.today()
+    print(f"\n  [Fix B5] backtest_date = {backtest_date.strftime('%Y-%m-%d')}  |  lag = {REPORTING_LAG_DAYS}gg")
+
     print("\n[1/3] Carico dati fondamentali ...")
     with open(FUND_PATH, "rb") as f:
         fund_data = pickle.load(f)
@@ -221,24 +261,34 @@ def run_backtest():
 
     print("\n[2/3] Calcolo scores ...")
     rows = []
+    n_filtered_out = 0
 
     for ticker, payload in fund_data.items():
         print(f"  {ticker:6s} ...", end=" ")
 
-        incq       = payload.get("income_stmt_q")
-        bsq        = payload.get("balance_sheet_q")
-        cfq        = payload.get("cash_flow_q")
         info       = payload.get("info", {})
         market_cap = info.get("marketCap")
+
+        # Fix B5: applica filtro look-ahead prima di qualsiasi .iloc[]
+        # LAG ASSUMPTION: fundamentals assumed available 45 days after quarter end to avoid look-ahead bias
+        incq = filter_fundamentals_by_date(payload.get("income_stmt_q"),   backtest_date)
+        bsq  = filter_fundamentals_by_date(payload.get("balance_sheet_q"), backtest_date)
+        cfq  = filter_fundamentals_by_date(payload.get("cash_flow_q"),     backtest_date)
 
         has_income   = isinstance(incq, pd.DataFrame) and not incq.empty
         has_balance  = isinstance(bsq,  pd.DataFrame) and not bsq.empty
         has_cashflow = isinstance(cfq,  pd.DataFrame) and not cfq.empty
         data_quality = sum([has_income, has_balance, has_cashflow, market_cap is not None])
 
+        if not has_income and not has_balance and not has_cashflow:
+            n_filtered_out += 1
+            print(f"SKIP (tutti i periodi filtrati da Fix B5)")
+            continue
+
         s_rev, r_rev = score_revenue_growth(incq)        if has_income   else (50.0, {})
         s_mar, r_mar = score_operating_margin(incq)      if has_income   else (50.0, {})
         s_fcf, r_fcf = score_fcf_yield(cfq, market_cap)  if has_cashflow else (50.0, {})
+
         _is_financial = ticker in FINANCIALS_TICKERS or SECTOR_MAP.get(ticker, "") == "Financials"
         if _is_financial:
             s_de_orig, _ = score_debt_equity(bsq)     if has_balance else (50.0, {})
@@ -246,36 +296,44 @@ def run_backtest():
         else:
             s_de_orig = None
             s_de,  r_de  = score_debt_equity(bsq)     if has_balance else (50.0, {})
+
         s_ins, r_ins = score_insider_activity(info)
 
         composite = round((s_rev + s_mar + s_fcf + s_de + s_ins) / 5, 1)
         direction = direction_from_composite(composite)
 
+        # Numero colonne disponibili dopo filtro (proxy di quanti quarter "visibili")
+        n_quarters_visible = len(incq.columns) if has_income else 0
+
         rows.append({
-            "ticker":            ticker,
-            "sector":            SECTOR_MAP.get(ticker, "Unknown"),
-            "direction":         direction,
-            "composite_score":   composite,
-            "s_revenue_growth":  s_rev,
-            "s_op_margin":       s_mar,
-            "s_fcf_yield":       s_fcf,
-            "s_debt_score":      s_de,
-            "s_debt_equity_orig": s_de_orig,   # None se non Financials
-            "is_financial":      _is_financial,
-            "scoring_method":    "debt_to_assets" if _is_financial else "debt_equity",
-            "s_insider":         s_ins,
-            "data_quality_0_4":  data_quality,
-            "revenue_qoq_pct":   r_rev.get("revenue_qoq_pct"),
-            "revenue_yoy_pct":   r_rev.get("revenue_yoy_pct"),
-            "op_margin_pct":     r_mar.get("op_margin_current_pct"),
-            "fcf_yield_pct":     r_fcf.get("fcf_yield_pct"),
-            "debt_equity_ratio": r_de.get("debt_equity_current"),
-            "insider_pct":       r_ins.get("held_pct_insiders"),
-            "market_cap_B":      round(market_cap / 1e9, 1) if market_cap else None,
+            "ticker":               ticker,
+            "sector":               SECTOR_MAP.get(ticker, "Unknown"),
+            "direction":            direction,
+            "composite_score":      composite,
+            "s_revenue_growth":     s_rev,
+            "s_op_margin":          s_mar,
+            "s_fcf_yield":          s_fcf,
+            "s_debt_score":         s_de,
+            "s_debt_equity_orig":   s_de_orig,
+            "is_financial":         _is_financial,
+            "scoring_method":       "debt_to_assets" if _is_financial else "debt_equity",
+            "s_insider":            s_ins,
+            "data_quality_0_4":     data_quality,
+            "n_quarters_visible":   n_quarters_visible,
+            "revenue_qoq_pct":      r_rev.get("revenue_qoq_pct"),
+            "revenue_yoy_pct":      r_rev.get("revenue_yoy_pct"),
+            "op_margin_pct":        r_mar.get("op_margin_current_pct"),
+            "fcf_yield_pct":        r_fcf.get("fcf_yield_pct"),
+            "debt_equity_ratio":    r_de.get("debt_equity_current"),
+            "insider_pct":          r_ins.get("held_pct_insiders"),
+            "market_cap_B":         round(market_cap / 1e9, 1) if market_cap else None,
         })
 
-        icon = "▲ LONG" if direction == "LONG" else ("▼ SHORT" if direction == "SHORT" else "– NEUT")
-        print(f"composite={composite:5.1f}  {icon}")
+        icon = "▲ LONG" if direction == "LONG" else ("▼ SHORT" if direction == "SHORT" else "— NEUT")
+        print(f"composite={composite:5.1f}  {icon}  (qtrs={n_quarters_visible})")
+
+    if n_filtered_out:
+        print(f"\n  [Fix B5] {n_filtered_out} ticker saltati per assenza dati pre-lag")
 
     print("\n[3/3] Salvataggio risultati ...")
     df = pd.DataFrame(rows)
@@ -290,19 +348,22 @@ def run_backtest():
     n_neutral = (df["direction"] == "NEUTRAL").sum()
 
     summary_rows = [
-        {"metrica": "Ticker totali",       "valore": n_total},
-        {"metrica": "Direzione LONG",      "valore": f"{n_long} ({n_long/n_total*100:.0f}%)"},
-        {"metrica": "Direzione SHORT",     "valore": f"{n_short} ({n_short/n_total*100:.0f}%)"},
-        {"metrica": "Direzione NEUTRAL",   "valore": f"{n_neutral} ({n_neutral/n_total*100:.0f}%)"},
-        {"metrica": "Dati completi (4/4)", "valore": (df["data_quality_0_4"] == 4).sum()},
-        {"metrica": "Composite medio",     "valore": round(df["composite_score"].mean(), 1)},
-        {"metrica": "Revenue Growth medio","valore": round(df["s_revenue_growth"].mean(), 1)},
-        {"metrica": "Op Margin medio",     "valore": round(df["s_op_margin"].mean(), 1)},
-        {"metrica": "FCF Yield medio",     "valore": round(df["s_fcf_yield"].mean(), 1)},
-        {"metrica": "Debt/Equity medio",   "valore": round(df["s_debt_score"].mean(), 1)},
-        {"metrica": "Insider medio",       "valore": round(df["s_insider"].mean(), 1)},
-        {"metrica": "LONG soglia",         "valore": LONG_THRESHOLD},
-        {"metrica": "SHORT soglia",        "valore": SHORT_THRESHOLD},
+        {"metrica": "Ticker totali",           "valore": n_total},
+        {"metrica": "Ticker filtrati (Fix B5)", "valore": n_filtered_out},
+        {"metrica": "backtest_date",            "valore": backtest_date.strftime("%Y-%m-%d")},
+        {"metrica": "reporting_lag_days",       "valore": REPORTING_LAG_DAYS},
+        {"metrica": "Direzione LONG",           "valore": f"{n_long} ({n_long/n_total*100:.0f}%)"},
+        {"metrica": "Direzione SHORT",          "valore": f"{n_short} ({n_short/n_total*100:.0f}%)"},
+        {"metrica": "Direzione NEUTRAL",        "valore": f"{n_neutral} ({n_neutral/n_total*100:.0f}%)"},
+        {"metrica": "Dati completi (4/4)",      "valore": (df["data_quality_0_4"] == 4).sum()},
+        {"metrica": "Composite medio",          "valore": round(df["composite_score"].mean(), 1)},
+        {"metrica": "Revenue Growth medio",     "valore": round(df["s_revenue_growth"].mean(), 1)},
+        {"metrica": "Op Margin medio",          "valore": round(df["s_op_margin"].mean(), 1)},
+        {"metrica": "FCF Yield medio",          "valore": round(df["s_fcf_yield"].mean(), 1)},
+        {"metrica": "Debt/Equity medio",        "valore": round(df["s_debt_score"].mean(), 1)},
+        {"metrica": "Insider medio",            "valore": round(df["s_insider"].mean(), 1)},
+        {"metrica": "LONG soglia",              "valore": LONG_THRESHOLD},
+        {"metrica": "SHORT soglia",             "valore": SHORT_THRESHOLD},
     ]
     summary_df = pd.DataFrame(summary_rows)
     summary_path = os.path.join(RESULT_DIR, "01_fundamentals_summary_fix2.csv")
@@ -311,8 +372,9 @@ def run_backtest():
 
     # ── Report a schermo ──────────────────────────────────────────────────────
     print("\n" + "=" * 65)
-    print("  RISULTATI – Fundamentals Agent")
+    print("  RISULTATI — Fundamentals Agent (Fix 2 + Fix B5)")
     print("=" * 65)
+    print(f"\n  [Fix B5] backtest_date={backtest_date.strftime('%Y-%m-%d')}  lag={REPORTING_LAG_DAYS}gg  ticker_filtrati={n_filtered_out}")
     print(f"\n  Direzioni:  LONG={n_long}  SHORT={n_short}  NEUTRAL={n_neutral}")
     print(f"\n  Score medi (0=peggio, 100=meglio):")
     print(f"    Composite       : {df['composite_score'].mean():.1f}")
@@ -322,11 +384,11 @@ def run_backtest():
     print(f"    Debt Score      : {df['s_debt_score'].mean():.1f}  (debt_to_assets per Financials, debt_equity altrimenti)")
     print(f"    Insider         : {df['s_insider'].mean():.1f}")
 
-    print(f"\n  Top 5 ticker (composite piu alto):")
+    print(f"\n  Top 5 ticker (composite più alto):")
     for _, r in df.nlargest(5, "composite_score").iterrows():
         print(f"    {r['ticker']:6s}  {r['composite_score']:5.1f}  {r['direction']:7s}  {r['sector']}")
 
-    print(f"\n  Bottom 5 ticker (composite piu basso):")
+    print(f"\n  Bottom 5 ticker (composite più basso):")
     for _, r in df.nsmallest(5, "composite_score").iterrows():
         print(f"    {r['ticker']:6s}  {r['composite_score']:5.1f}  {r['direction']:7s}  {r['sector']}")
 
@@ -335,11 +397,10 @@ def run_backtest():
     for sector, avg in sect.items():
         print(f"    {sector:20s}  {avg:.1f}")
 
-    print(f"\n  File salvati in backtest/results/")
-    # ── Fix 2: Confronto Financials ──────────────────────────────────────────
+    # ── Fix 2: Confronto Financials ───────────────────────────────────────────
     fin_df = df[df["is_financial"] == True].copy()
     if not fin_df.empty:
-        print(f"\n  FIX 2 – Confronto score Financials (debt_equity → debt_to_assets):")
+        print(f"\n  FIX 2 — Confronto score Financials (debt_equity → debt_to_assets):")
         print(f"  {'Ticker':<8} {'D/E score (orig)':>16} {'D/A score (fix2)':>16} {'Delta':>8} {'Composite fix2':>14}")
         print(f"  {'-'*66}")
         for _, r in fin_df.iterrows():
@@ -352,7 +413,8 @@ def run_backtest():
     else:
         print("\n  Nessun ticker Financials nel dataset.")
 
-    print(f"\n  Prossimo step: python backtest/02_backtest_risk_manager.py")
+    print(f"\n  File salvati in backtest/results/")
+    print(f"  Prossimo step: python backtest/02_backtest_risk_manager.py")
     print("=" * 65)
 
 
