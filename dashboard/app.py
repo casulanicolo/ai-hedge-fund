@@ -396,12 +396,13 @@ if page == "🏠 Overview":
     st.write("Visualizzazione dell'allineamento delle 4 dimensioni (Fundamentals, Technical, Sentiment, Macro) per i top trade di oggi:")
 
     # Usiamo i ticker dei top 3 BUY che abbiamo già calcolato nel Daily Briefing
-    if 'df_buys' in locals() and not df_buys.empty:
+    if 'df_buys' in locals() and not df_buys.empty and 'latest_run_id' in locals() and latest_run_id:
         tickers_da_mostrare = df_buys['ticker'].tolist()
         radar_cols = st.columns(len(tickers_da_mostrare))
         for idx, t in enumerate(tickers_da_mostrare):
             with radar_cols[idx]:
-                st.plotly_chart(plot_dimension_radar(t, latest_run_id), use_container_width=True)
+                fig_radar = plot_dimension_radar(t, latest_run_id)
+                st.plotly_chart(fig_radar, use_container_width=True, key=f"radar_{t}_{idx}")
     else:
         st.info("Nessun trade consigliato su cui mostrare l'analisi dimensionale.")
 
