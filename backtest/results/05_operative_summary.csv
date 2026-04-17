@@ -1,0 +1,20 @@
+metrica,valore
+Ticker,30
+Agenti (prod),13
+Signal dates (Fix B1),78
+Signal freq giorni,20
+Prima signal date,2020-01-02
+Ultima signal date,2026-02-19
+Righe totali,32382
+reporting_lag_days (Fix B5),45
+cost_equity_roundtrip (B2),0.10%
+cost_highvol_roundtrip (B2),0.30%
+high_vol_tickers (B2),"['BTC-USD', 'COIN', 'ETH-USD', 'MSTR', 'SMCI', 'SOL-USD']"
+WR 20d gross medio (prod),53.9%
+WR 20d net medio (prod),53.5%
+Miglior agente gross WR20d,aswath_damodaran
+Miglior agente net WR20d,aswath_damodaran
+[Fix7] PEG None,30
+[Fix7] PEG recuperati,13
+LONG_THRESH,62.0
+SHORT_THRESH,38.0

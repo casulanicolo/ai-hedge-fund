@@ -1,0 +1,10 @@
+priorita,agente,problema,fix,impatto,effort
+1,Devil's Advocate,"VIX regime quasi decorativo: conviction threshold domina, VIX aggiunge solo 5-10%","Implementare conviction_threshold dinamica: 0.45 in LOW, 0.55 in NORMAL, 0.65 in ELEVATED, 0.75 in CRISIS",ALTO,BASSO
+2,Fundamentals Agent,score_debt_equity penalizza banche e financials per leva strutturale (GS a 22.0),Aggiungere check settore: per Financials usare Tier 1 Capital Ratio o debt_to_assets invece di D/E,MEDIO,MEDIO
+3,Risk Manager,MSTR/COIN/SMCI con VaR individuale >6% non vengono bloccati. V/MA ridondanti (corr 0.887),Aggiungere single-ticker VaR cap (es. max 4% VaR individuale nel portfolio). Rimuovere uno tra V e MA dall'universe.,ALTO,BASSO
+4,Breakout Momentum,compute_breakout_score genera bias LONG strutturale in bull market. Breakout confermati da volume non battono il caso (49.1%),Aggiungere componente di mean-reversion: penalizzare score se RSI>70. Aumentare peso del componente SHORT (resistance breakdown).,MEDIO,MEDIO
+5,Tutti gli agenti fondamentali,WR_5d sistematicamente <50% per tutti gli agenti value/growth. Orizzonte fondamentale (trimestrale) incompatibile con swing 3-4 giorni,Aggiungere filtro tecnico obbligatorio: un segnale fondamentale viene emesso solo se confermato da momentum tecnico (es. EMA trend positivo),ALTO,MEDIO
+6,michael_burry,"WR_20d 5.3% in bull market — non per un bug, ma per mismatch contesto",Aumentare peso di Burry nel Weight Adjuster solo in regime ELEVATED/CRISIS (VIX>25). In regime LOW abbassarlo automaticamente.,MEDIO,BASSO
+7,peter_lynch,PEG ratio None per molti ticker — agente parzialmente cieco,Calcolare PEG ratio internamente: P/E trailing / earnings_growth (da yfinance info) quando non disponibile direttamente,BASSO,BASSO
+8,mohnish_pabrai,"WR_5d 12.5% — troppo selettivo per large cap US, solo 7 LONG su 30",Abbassare soglie FCF yield (da 10% a 6% per LONG) e allargare il pool di ticker a mid cap,BASSO,BASSO
+9,Weight Adjuster (EWA),Non testato isolatamente in questa sessione,Da includere in F4 seconda sessione: testare stabilità pesi EWA su dati storici con outcome tracker simulato,MEDIO,MEDIO

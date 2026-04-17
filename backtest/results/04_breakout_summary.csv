@@ -1,0 +1,20 @@
+metrica,valore
+Ticker analizzati,30
+Giorni totali analizzati,7500
+Segnali LONG totali,3198
+Segnali SHORT totali,1084
+Segnali NEUTRAL totali,3218
+Win rate a 3gg,52.4%
+Win rate a 5gg,52.0%
+Win rate a 10gg,51.7%
+Avg return LONG a 5gg,+0.29%
+Avg return SHORT a 5gg,+0.19%
+[Fix4] WR LONG overbought (RSI>70),52.6%
+[Fix4] WR LONG normale (RSI<=70),53.8%
+[Fix4] WR SHORT oversold (RSI<30),40.1%
+[Fix4] WR SHORT normale (RSI>=30),48.5%
+[Fix4] Delta LONG ob vs normale,-1.2pp
+Breakout confermati (LONG),1028
+Win rate breakout confermati,49.4%
+Miglior ticker (win rate 5d),GOOGL
+Peggior ticker (win rate 5d),MELI

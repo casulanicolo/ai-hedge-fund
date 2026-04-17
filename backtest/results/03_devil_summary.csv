@@ -1,0 +1,16 @@
+metrica,valore
+Giorni analizzati (VIX),249
+VIX medio,19.0
+VIX min,13.5
+VIX max,37.6
+Regime LOW (%),57.4%
+Regime NORMAL (%),32.1%
+Regime ELEVATED (%),10.0%
+Regime CRISIS (%),0.4%
+Veto rate atteso medio,16.5%
+Segnali simulati,1000
+Veto rate simulazione,58.0%
+False rejection rate,21.9%
+False acceptance rate,9.7%
+CONVICTION_THRESHOLD,0.55
+MIN_AGENTS_AGREEING,2

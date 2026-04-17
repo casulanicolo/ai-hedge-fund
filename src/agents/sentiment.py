@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+import requests
 import yfinance as yf
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
@@ -220,6 +222,125 @@ def _fetch_8k_events(ticker: str, state: AgentState) -> list[dict[str, Any]]:
 
 
 # ────────────────────────────────────────────────
+# Helper: fetch 10-Q MD&A snippet from SEC EDGAR
+# ────────────────────────────────────────────────
+
+# SEC EDGAR archives root — filing HTMLs are hosted here
+_SEC_ARCHIVES = "https://www.sec.gov/Archives/edgar/data"
+
+# Regex patterns to locate MD&A section boundaries in 10-Q HTML
+_MDA_STARTS = re.compile(
+    r"(?:management.{0,30}discussion|item\s*2\.?\s*management.{0,60}discussion)",
+    re.IGNORECASE,
+)
+_MDA_ENDS = re.compile(
+    r"(?:quantitative\s+and\s+qualitative|item\s*3|market\s+risk)",
+    re.IGNORECASE,
+)
+
+# Max chars extracted from MD&A (keeps LLM prompt manageable)
+MDA_SNIPPET_MAX_CHARS = 2500
+
+
+def _strip_html(raw: str) -> str:
+    """Remove HTML tags, named and numeric entities, collapse whitespace."""
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = re.sub(r"&#[0-9]+;", " ", text)   # numeric entities &#160; &#8217; etc.
+    text = re.sub(r"&[a-zA-Z]+;", " ", text)  # named entities &nbsp; &amp; etc.
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _fetch_10q_mda_snippet(ticker: str, state: AgentState) -> str | None:
+    """
+    Fetch the MD&A section from the most recent 10-Q filing.
+
+    Returns a plain-text snippet (up to MDA_SNIPPET_MAX_CHARS chars) or
+    None if the filing is unavailable or the fetch fails (graceful degradation).
+
+    URL construction:
+      https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodash}/{document}
+    where accession_nodash = accession with dashes removed.
+
+    Note: SEC EDGAR requires a User-Agent header identifying the requester.
+    """
+    try:
+        prefetched  = state.get("data", {}).get("prefetched_data", {})
+        ticker_data = prefetched.get(ticker, {})
+        sec_data    = ticker_data.get("sec_filings", {})
+        filings_10q = sec_data.get("10-Q", []) or []
+
+        if not filings_10q:
+            return None
+
+        # Use the most recent 10-Q
+        filing = filings_10q[0]
+        cik        = sec_data.get("cik") or ""
+        accession  = filing.get("accession") or ""
+        document   = filing.get("document") or ""
+        filed_date = filing.get("date") or filing.get("filingDate") or ""
+
+        if not (cik and accession and document):
+            return None
+
+        # CIK as integer (strip leading zeros) for the URL path
+        cik_int = str(int(cik))
+
+        # Accession without dashes for folder path
+        accession_nodash = accession.replace("-", "")
+
+        url = f"{_SEC_ARCHIVES}/{cik_int}/{accession_nodash}/{document}"
+
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "AthanorAlpha research@athanor-alpha.com"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.debug(
+                "_fetch_10q_mda_snippet(%s): HTTP %d for %s",
+                ticker, resp.status_code, url,
+            )
+            return None
+
+        raw_html = resp.text
+
+        # Find MD&A section: skip the first match (usually a TOC entry)
+        # and look for the second occurrence, which is the actual section body.
+        # We search for two consecutive matches; if only one found, use it.
+        match_1 = _MDA_STARTS.search(raw_html)
+        if not match_1:
+            return None
+
+        # Look for a second occurrence beyond the first (skip TOC)
+        match_2 = _MDA_STARTS.search(raw_html, pos=match_1.end() + 50)
+        mda_start_pos = match_2.start() if match_2 else match_1.start()
+
+        # Extract a generous window (20k chars), then clean and trim
+        raw_window = raw_html[mda_start_pos: mda_start_pos + 25000]
+        mda_text   = _strip_html(raw_window)
+
+        # Trim at MD&A end marker (skip the section title itself, ~300 chars)
+        end_match = _MDA_ENDS.search(mda_text, pos=300)
+        if end_match:
+            mda_text = mda_text[:end_match.start()]
+
+        snippet = mda_text[:MDA_SNIPPET_MAX_CHARS].strip()
+
+        if len(snippet) < 150:
+            return None
+
+        logger.info(
+            "_fetch_10q_mda_snippet(%s): extracted %d chars from 10-Q filed %s",
+            ticker, len(snippet), filed_date,
+        )
+        return snippet
+
+    except Exception as exc:
+        logger.debug("_fetch_10q_mda_snippet(%s): %s", ticker, exc)
+        return None
+
+
+# ────────────────────────────────────────────────
 # Core scoring logic
 # ────────────────────────────────────────────────
 
@@ -296,7 +417,11 @@ def sentiment_agent(state: AgentState) -> dict[str, Any]:
             sec_items = _fetch_8k_events(ticker, state)
             all_items = yf_items + sec_items
 
-            if not all_items:
+            # 1b. 10-Q MD&A snippet (fetched independently, not an "item")
+            progress.update_status(AGENT_ID, ticker, "fetching 10-Q MD&A")
+            mda_snippet = _fetch_10q_mda_snippet(ticker, state)
+
+            if not all_items and not mda_snippet:
                 progress.update_status(AGENT_ID, ticker, "no news found → neutral")
                 _neutral_levels = compute_trade_levels("NEUTRAL", state, ticker)
                 analyst_signals[AGENT_ID][ticker] = {
@@ -334,6 +459,18 @@ def sentiment_agent(state: AgentState) -> dict[str, Any]:
                 indent=2,
             )
 
+            # Build MD&A block for the prompt (omit section if absent)
+            mda_block = ""
+            if mda_snippet:
+                mda_block = f"""
+10-Q MD&A EXCERPT (most recent quarterly filing — management's own words):
+\"\"\"
+{mda_snippet[:MDA_SNIPPET_MAX_CHARS]}
+\"\"\"
+When interpreting the MD&A, focus on: management tone (confident vs cautious),
+forward-looking language, specific risk factors mentioned, and changes vs prior quarter.
+"""
+
             prompt = f"""You are an expert financial sentiment analyst evaluating {ticker} for a 3-4 day swing trade.
 
 Analysis date: {datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")}
@@ -343,15 +480,16 @@ Dominant urgency detected: {dominant_urgency}
 
 Recent news items and SEC 8-K filings (up to 8, sorted by urgency):
 {items_json}
-
+{mda_block}
 Instructions:
 1. Interpret the news holistically. Use the heuristic score as a starting point.
-2. Determine direction: LONG (positive sentiment), SHORT (negative sentiment), NEUTRAL.
-3. Estimate expected_return: realistic % return for a 3-4 day swing trade based on sentiment strength (e.g. 0.02 = +2%). Must reflect a realistic target, not a theoretical maximum. Range: -0.10 to +0.10. expected_return must reflect the direction (positive for LONG, negative for SHORT, ~0 for NEUTRAL).
-4. Assess confidence from 0.1 to 1.0.
-5. Choose dominant event_type: earnings | M&A | regulatory | macro | other.
-6. Assess urgency: high (act now), medium (monitor), low (background noise).
-7. Write a short reasoning (2-4 sentences).
+2. If 10-Q MD&A is available, weight it heavily — it is management's own forward-looking assessment.
+3. Determine direction: LONG (positive sentiment), SHORT (negative sentiment), NEUTRAL.
+4. Estimate expected_return: realistic % return for a 3-4 day swing trade based on sentiment strength (e.g. 0.02 = +2%). Must reflect a realistic target, not a theoretical maximum. Range: -0.10 to +0.10. expected_return must reflect the direction (positive for LONG, negative for SHORT, ~0 for NEUTRAL).
+5. Assess confidence from 0.1 to 1.0.
+6. Choose dominant event_type: earnings | M&A | regulatory | macro | other.
+7. Assess urgency: high (act now), medium (monitor), low (background noise).
+8. Write a short reasoning (2-4 sentences). If MD&A was used, mention one specific insight from it.
 
 Return ONLY a valid JSON object matching this schema – no extra text:
 {{

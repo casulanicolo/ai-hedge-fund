@@ -17,6 +17,7 @@ from typing import Any
 
 from src.data.prefetch import DataPrefetcher
 from src.data.sec_edgar import SECFetcher
+from src.data.macro_fetcher import MacroFetcher
 from src.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -76,8 +77,25 @@ def data_prefetch_agent(state: AgentState) -> dict[str, Any]:
         if ticker in prefetched and ticker in sec_data:
             prefetched[ticker]["sec_filings"] = sec_data[ticker]
 
+    # ── 4. Global macro data (VIX + yield curve) ──────────────────────────
+    try:
+        macro_data = MacroFetcher.fetch()
+        logger.info(
+            "data_prefetch_agent: macro data fetched — VIX=%.1f, spread=%.3fpp",
+            macro_data.get("vix") or 0.0,
+            macro_data.get("yield_spread_10y3m") or 0.0,
+        )
+    except Exception as e:
+        logger.warning(
+            "data_prefetch_agent: MacroFetcher.fetch() fallito — %s. "
+            "La pipeline continua senza dati macro.",
+            e, exc_info=True,
+        )
+        macro_data = {}
+
     return {
         "data": {
             "prefetched_data": prefetched,
+            "macro_data":      macro_data,
         }
     }

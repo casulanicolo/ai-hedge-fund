@@ -1,0 +1,18 @@
+agente,data_quality_1_5,signal_accuracy_1_5,signal_volume_1_5,directional_bias_1_5,philosophy_fit_1_5,overall_1_5,note
+Risk Manager,5,4,5,5,4,4.6,Warning: MSTR/COIN/SMCI con VaR >6% non vengono bloccati individualmente. V/MA ridondanti (corr 0.887).
+stanley_druckenmiller,4,3,4,3,4,3.6,Il momentum dovrebbe dare edge su 5gg. WR_5d 35% suggerisce che la 52w proximity da sola non basta senza dati intraday.
+aswath_damodaran,4,2,4,3,5,3.6,DCF è per definizione long-term. WR_5d 26.3% conferma: non adatto a swing trading.
+Fundamentals Agent,5,3,4,2,3,3.4,Bug: score_debt_equity non calibrato per Financials (banche). Bias bullish strutturale.
+Breakout Momentum,5,3,4,2,3,3.4,Bug: compute_breakout_score genera bias LONG strutturale in bull market. Breakout confermati da volume non battono il caso (49.1%).
+growth_agent,4,3,4,2,4,3.4,Agente ben strutturato con pesi espliciti (40/25/15/10/10). Funziona meglio su orizzonti >5gg.
+michael_burry,3,3,3,4,4,3.4,WR_5d SHORT = 57.9% — l'agente contrarian funziona. Penalizzato in bull market ma utile come hedge. Da pesare di più in regime ELEVATED/CRISIS.
+cathie_wood,4,3,3,3,4,3.4,L'unico agente growth che genera SHORT significativi (5). Beta come proxy R&D è approssimativo.
+charlie_munger,4,3,4,2,4,3.4,Stesso problema di Buffett: orizzonte non compatibile con 3-4 giorni. Miglior P&L simulato a 20gg.
+mohnish_pabrai,4,2,2,4,4,3.2,Troppo selettivo per un universe di large cap. WR_5d 12.5% è anomalo — probabile che i pochi LONG scelti siano in settori sfavorevoli.
+ben_graham,3,3,2,4,4,3.2,Agente troppo selettivo per un universe di large cap US. Graham è nato per small cap value. WR_20d 30.8% in bull market — penalizzato dal contesto.
+Devil's Advocate,4,3,4,3,2,3.2,Bug critico: la logica VIX non scala il comportamento in modo significativo. Conviction threshold domina tutto.
+warren_buffett,4,2,4,2,4,3.2,Orizzonte fondamentale (trimestrale) non compatibile con swing 3-4 giorni. Su 20gg funziona.
+rakesh_jhunjhunwala,4,2,4,3,3,3.2,Filosofia pensata per mercato indiano applicata a US large cap — mismatch geografico.
+phil_fisher,4,2,4,2,4,3.2,"Agente long-term per definizione: Fisher teneva i titoli decenni. WR_5d basso è atteso, non un bug."
+bill_ackman,4,2,3,2,3,2.8,Activism potential non testabile con sole metriche yfinance.
+peter_lynch,3,2,3,2,4,2.8,"PEG ratio mancante per molti ticker (specialmente non-US). Quando disponibile, funziona bene."

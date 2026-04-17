@@ -14,7 +14,18 @@
       "Bash(cmd /c \"where poetry\")",
       "Bash(cmd /c \"py -m poetry run python --version\")",
       "Bash(find /c/Users/tomma -name *.venv -type d)",
-      "Bash(.venv/Scripts/python -c \":*)"
+      "Bash(.venv/Scripts/python -c \":*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(claude plugin:*)",
+      "Bash(python -c \"from src.data.macro_fetcher import MacroFetcher; print\\('macro_fetcher OK'\\)\")",
+      "Bash(python -c \"from src.agents.macro_agent import macro_agent; print\\('macro_agent OK'\\)\")",
+      "Bash(python -m venv --help)",
+      "Bash(.venv/Scripts/python -c \"from src.agents.macro_agent import macro_agent; print\\('macro_agent OK'\\)\")",
+      "Bash(.venv/Scripts/python -c ':*)",
+      "Bash(.venv/Scripts/python -c \"from src.utils.analysts import ANALYST_CONFIG; print\\('analysts OK, keys:', sorted\\(ANALYST_CONFIG.keys\\(\\)\\)\\)\")",
+      "Bash(.venv/Scripts/python -c \"import requests, re; print\\('requests OK'\\)\")",
+      "Bash(python -c ':*)"
     ]
   }
 }

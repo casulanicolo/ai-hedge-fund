@@ -1,0 +1,31 @@
+ticker,sector,var_95_daily,max_drawdown,annual_vol,var_warn,dd_warn
+MSTR,Crypto-Proxy,0.0725,0.7653,0.6648,True,True
+COIN,Crypto-Proxy,0.067,0.6639,0.7151,True,True
+SMCI,Technology,0.0662,0.6618,0.8035,True,True
+PLTR,Technology,0.06,0.3819,0.5425,True,True
+TSLA,Consumer Disc.,0.0466,0.2993,0.4887,True,True
+FCX,Materials,0.0437,0.249,0.4513,True,True
+MELI,Consumer Disc.,0.0384,0.388,0.3781,False,True
+NVDA,Technology,0.0353,0.2021,0.3478,False,True
+UNH,Healthcare,0.0346,0.5921,0.5426,False,True
+NKE,Consumer Disc.,0.0317,0.4523,0.394,False,True
+AMZN,Consumer Disc.,0.0284,0.2174,0.3142,False,True
+META,Technology,0.0281,0.333,0.3556,False,True
+ABBV,Healthcare,0.0272,0.1486,0.2553,False,False
+MRK,Healthcare,0.0256,0.1377,0.2755,False,False
+XOM,Energy,0.0247,0.1106,0.2296,False,False
+MSFT,Technology,0.0241,0.3391,0.2411,False,True
+PFE,Healthcare,0.0238,0.1147,0.2543,False,False
+GOOGL,Technology,0.0236,0.2037,0.2851,False,True
+HD,Consumer Disc.,0.0231,0.2372,0.228,False,True
+JPM,Financials,0.0229,0.1547,0.2133,False,True
+V,Financials,0.0227,0.2038,0.2092,False,True
+GS,Financials,0.0221,0.1942,0.2708,False,True
+AAPL,Technology,0.0217,0.138,0.2371,False,False
+CVX,Energy,0.0214,0.107,0.2125,False,False
+APD,Materials,0.0211,0.2239,0.2518,False,True
+MA,Financials,0.0206,0.1892,0.2147,False,True
+WMT,Consumer Disc.,0.0179,0.1092,0.2198,False,False
+LIN,Materials,0.0167,0.1918,0.1647,False,True
+BRK-B,Financials,0.0158,0.1495,0.1594,False,False
+JNJ,Healthcare,0.014,0.0722,0.1653,False,False

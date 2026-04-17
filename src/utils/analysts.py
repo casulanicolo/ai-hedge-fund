@@ -17,7 +17,7 @@ from src.agents.valuation import valuation_analyst_agent
 from src.agents.warren_buffett import warren_buffett_agent
 from src.agents.rakesh_jhunjhunwala import rakesh_jhunjhunwala_agent
 from src.agents.mohnish_pabrai import mohnish_pabrai_agent
-from src.agents.news_sentiment import news_sentiment_agent
+
 from src.agents.growth_agent import growth_analyst_agent
 from src.agents.breakout_momentum import breakout_momentum_agent
 
@@ -143,14 +143,7 @@ ANALYST_CONFIG = {
         "type": "analyst",
         "order": 13,
     },
-    "news_sentiment_analyst": {
-        "display_name": "News Sentiment Analyst",
-        "description": "News Sentiment Specialist",
-        "investing_style": "Analyzes news sentiment to predict market movements and identify opportunities through news analysis.",
-        "agent_func": news_sentiment_agent,
-        "type": "analyst",
-        "order": 14,
-    },
+
     "sentiment_analyst": {
         "display_name": "Sentiment Analyst",
         "description": "Market Sentiment Specialist",

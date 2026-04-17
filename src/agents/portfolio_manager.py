@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pathlib
+from datetime import datetime, timezone
 from math import floor
 from typing import Any
 
@@ -45,6 +47,48 @@ RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.005"))
 MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "3"))
 
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
+
+# ── Macro regime position caps (FIX C2) ──────────────────────────────────────
+# Hard ceiling on position size (%) based on macro_agent's combined regime
+# (VIX + yield curve). Applied AFTER Kelly/vol sizing and VIX multiplier.
+# RISK_OFF drastic reduction protects capital during macro stress.
+MACRO_REGIME_POSITION_CAPS: dict[str, float] = {
+    "RISK_ON":  20.0,   # normal max (same as MAX_SINGLE_POSITION)
+    "CAUTION":  12.0,   # reduced — macro uncertainty
+    "RISK_OFF":  5.0,   # drastic — VIX spike OR inverted yield curve
+    "UNKNOWN":  12.0,   # treat unknown as caution
+}
+
+# ── Dimension map (FIX C2) ────────────────────────────────────────────────────
+# Maps agent_id keys (as written into analyst_signals) to one of the 4 canonical
+# signal dimensions. Agents in the same dimension are averaged before cross-
+# dimension aggregation, preventing FUNDAMENTALS (6 agents) from dominating.
+# Agents NOT listed here are bucketed under "OTHER" and still contribute but
+# do not inflate any canonical dimension.
+
+AGENT_DIMENSION_MAP: dict[str, str] = {
+    # ── FUNDAMENTALS ──────────────────────────────────────────────────────────
+    "fundamentals_analyst_agent": "FUNDAMENTALS",
+    "warren_buffett_agent":       "FUNDAMENTALS",
+    "ben_graham_agent":           "FUNDAMENTALS",
+    "charlie_munger_agent":       "FUNDAMENTALS",
+    "michael_burry_agent":        "FUNDAMENTALS",
+    "bill_ackman_agent":          "FUNDAMENTALS",
+    "cathie_wood_agent":          "FUNDAMENTALS",
+    "phil_fisher_agent":          "FUNDAMENTALS",
+    "mohnish_pabrai_agent":       "FUNDAMENTALS",
+    "peter_lynch_agent":          "FUNDAMENTALS",
+    "rakesh_jhunjhunwala_agent":  "FUNDAMENTALS",
+    "aswath_damodaran_agent":     "FUNDAMENTALS",
+    # ── TECHNICAL ─────────────────────────────────────────────────────────────
+    "technical_analyst_agent":    "TECHNICAL",
+    "breakout_momentum":          "TECHNICAL",
+    # ── SENTIMENT ─────────────────────────────────────────────────────────────
+    "sentiment_agent":            "SENTIMENT",
+    "news_sentiment_agent":       "SENTIMENT",
+    # ── MACRO ─────────────────────────────────────────────────────────────────
+    "macro_agent":                "MACRO",
+}
 
 # ── Threshold per livelli informativi su HOLD ─────────────────────────────────
 INFO_NET_SCORE_THRESHOLD = 0.10   # |net_score| minimo per mostrare livelli info su HOLD
@@ -167,23 +211,31 @@ def _format_positions_for_prompt(positions: list[dict]) -> str:
 
 def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
     """
-    For each ticker compute a weighted net score across all agents.
-    Also computes Weighted Conviction (WC) using the new AgentOutput format.
+    Dimension-balanced signal aggregation (FIX C2).
+
+    Architecture:
+      1. Collect all agent signals, group by AGENT_DIMENSION_MAP dimension.
+      2. Per dimension: compute average score and confidence across agents in that dim.
+      3. Cross-dimension: average the dimension scores with equal weight per dimension.
+         → Prevents 6 FUNDAMENTALS agents from dominating 2 TECHNICAL + 1 SENTIMENT.
+      4. Consensus ratio = number of dimensions agreeing / number of active dimensions.
+      5. Weighted Conviction = dimension-averaged WC (not per-agent WC).
+
     Returns {ticker: {net_score, avg_confidence, bull_agents, bear_agents,
-                       net_signal, weighted_conviction}}
+                       net_signal, n_agents, n_dims, dim_scores,
+                       weighted_conviction, consensus_ratio}}
     """
     analyst_signals: dict[str, Any] = state.get("data", {}).get("analyst_signals", {})
-    agent_weights:   dict[str, Any] = state.get("data", {}).get("agent_weights", {})
 
     result: dict[str, dict] = {}
 
     for ticker in tickers:
-        net_score    = 0.0
-        total_weight = 0.0
-        bull_agents: list[str] = []
-        bear_agents: list[str] = []
-        conf_sum = 0.0
-        n = 0
+
+        # ── Step 1: collect per-agent data, grouped by dimension ───────────
+        dim_buckets: dict[str, list[dict]] = {}
+        all_bull_agents: list[str] = []
+        all_bear_agents: list[str] = []
+        n_agents_total = 0
 
         for agent_id, agent_data in analyst_signals.items():
             if agent_id in NON_SIGNAL_AGENTS:
@@ -201,12 +253,14 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
             if not isinstance(sig_data, dict):
                 continue
 
-            # Support both old format (signal) and new format (direction)
+            # Normalise direction: supports both old (signal) and new (direction) formats
             direction  = sig_data.get("direction")
             signal_raw = sig_data.get("signal", "neutral")
 
             if direction:
-                signal = "bullish" if direction == "LONG" else ("bearish" if direction == "SHORT" else "neutral")
+                signal = "bullish" if direction == "LONG" else (
+                    "bearish" if direction == "SHORT" else "neutral"
+                )
             else:
                 signal = str(signal_raw).lower()
 
@@ -218,59 +272,102 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
                 confidence /= 100.0
             confidence = max(0.0, min(1.0, confidence))
 
-            weight = 1.0
-            if agent_weights:
-                w_entry = agent_weights.get(agent_id, {})
-                if isinstance(w_entry, dict):
-                    weight = float(w_entry.get(ticker, w_entry.get("default", 1.0)))
-                elif isinstance(w_entry, (int, float)):
-                    weight = float(w_entry)
+            expected_return = float(sig_data.get("expected_return", 0.0))
 
+            # Score: ±confidence for directional signals, 0 for neutral
             if signal == "bullish":
-                score = +1.0 * confidence * weight
-                bull_agents.append(agent_id)
+                score = +confidence
+                all_bull_agents.append(agent_id)
             elif signal == "bearish":
-                score = -1.0 * confidence * weight
-                bear_agents.append(agent_id)
+                score = -confidence
+                all_bear_agents.append(agent_id)
             else:
                 score = 0.0
 
-            net_score    += score
-            total_weight += weight
-            conf_sum     += confidence
-            n            += 1
+            dim = AGENT_DIMENSION_MAP.get(agent_id, "OTHER")
+            dim_buckets.setdefault(dim, []).append({
+                "agent_id":       agent_id,
+                "signal":         signal,
+                "score":          score,
+                "confidence":     confidence,
+                "expected_return": expected_return,
+            })
+            n_agents_total += 1
 
-        # Compute Weighted Conviction using new AgentOutput format
-        ticker_signals = _collect_signals_for_ticker(state, ticker)
-        wc = compute_weighted_conviction(ticker_signals)
-
-        if n == 0:
+        if n_agents_total == 0:
             result[ticker] = {
                 "net_score": 0.0, "avg_confidence": 0.0,
                 "bull_agents": [], "bear_agents": [],
                 "net_signal": "neutral", "n_agents": 0,
-                "weighted_conviction": wc,
+                "n_dims": 0, "dim_scores": {},
+                "weighted_conviction": 0.0, "consensus_ratio": 0.0,
             }
             continue
 
-        norm_score = net_score / total_weight if total_weight > 0 else 0.0
-        avg_conf   = conf_sum / n
+        # ── Step 2: per-dimension aggregation ─────────────────────────────
+        dim_scores_map: dict[str, dict] = {}
 
-        if norm_score > NET_SCORE_THRESHOLD:
+        for dim, agents_list in dim_buckets.items():
+            n_dim      = len(agents_list)
+            dim_score  = sum(a["score"] for a in agents_list) / n_dim
+            dim_conf   = sum(a["confidence"] for a in agents_list) / n_dim
+
+            non_neutral = [a for a in agents_list if a["signal"] != "neutral"]
+            dim_wc = (
+                sum(a["expected_return"] * a["confidence"] for a in non_neutral)
+                / len(non_neutral)
+                if non_neutral else 0.0
+            )
+
+            dim_scores_map[dim] = {
+                "avg_score": dim_score,
+                "avg_conf":  dim_conf,
+                "dim_wc":    dim_wc,
+                "n":         n_dim,
+            }
+
+        # ── Step 3: cross-dimension aggregation (equal weight per dim) ────
+        # Each of the 4 canonical dimensions (FUNDAMENTALS, TECHNICAL,
+        # SENTIMENT, MACRO) contributes exactly 1/n_dims to the final score.
+        # With all 4 active: each dimension = 25%.
+        # If a dimension is absent (agent inactive): remaining dims share 100%
+        # equally. e.g. 3 active dims → each ~33%.
+        n_dims     = len(dim_scores_map)
+        final_score = sum(d["avg_score"] for d in dim_scores_map.values()) / n_dims
+        final_conf  = sum(d["avg_conf"]  for d in dim_scores_map.values()) / n_dims
+
+        # Dimension-weighted WC: average dim_wc across all active dimensions
+        # (denominator = n_dims to correctly dilute inactive/neutral dims)
+        dim_wc_final = sum(d["dim_wc"] for d in dim_scores_map.values()) / n_dims
+
+        # ── Step 4: net signal ────────────────────────────────────────────
+        if final_score > NET_SCORE_THRESHOLD:
             net_signal = "bullish"
-        elif norm_score < -NET_SCORE_THRESHOLD:
+            n_agreeing = sum(
+                1 for d in dim_scores_map.values() if d["avg_score"] > 0.05
+            )
+        elif final_score < -NET_SCORE_THRESHOLD:
             net_signal = "bearish"
+            n_agreeing = sum(
+                1 for d in dim_scores_map.values() if d["avg_score"] < -0.05
+            )
         else:
             net_signal = "neutral"
+            n_agreeing = 0
+
+        consensus_ratio = n_agreeing / n_dims if n_dims > 0 else 0.0
 
         result[ticker] = {
-            "net_score":           round(norm_score, 4),
-            "avg_confidence":      round(avg_conf, 3),
-            "bull_agents":         bull_agents,
-            "bear_agents":         bear_agents,
+            "net_score":           round(final_score, 4),
+            "avg_confidence":      round(final_conf, 3),
+            "bull_agents":         all_bull_agents,
+            "bear_agents":         all_bear_agents,
             "net_signal":          net_signal,
-            "n_agents":            n,
-            "weighted_conviction": wc,
+            "n_agents":            n_agents_total,
+            "n_dims":              n_dims,
+            "dim_scores":          {k: round(v["avg_score"], 4) for k, v in dim_scores_map.items()},
+            "weighted_conviction": round(dim_wc_final, 6),
+            "consensus_ratio":     round(consensus_ratio, 3),
         }
 
     return result
@@ -279,6 +376,28 @@ def _weighted_signals(state: AgentState, tickers: list[str]) -> dict[str, dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 # Sizing logic
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _get_macro_regime(state: dict | None) -> str:
+    """
+    Read the macro_agent's regime from state["data"]["analyst_signals"]["macro_agent"].
+    Returns the regime string for the first ticker found (regime is global).
+    Falls back to "CAUTION" if macro_agent has not run or data is absent.
+    """
+    if state is None:
+        return "CAUTION"
+    try:
+        macro_signals = (
+            state.get("data", {})
+                 .get("analyst_signals", {})
+                 .get("macro_agent", {})
+        )
+        if not macro_signals:
+            return "CAUTION"
+        first = next(iter(macro_signals.values()), {})
+        return first.get("macro_regime", "CAUTION")
+    except Exception:
+        return "CAUTION"
+
 
 def _load_risk_params() -> dict:
     """
@@ -417,14 +536,14 @@ def _compute_sizing(
 
     if net_signal == "bullish":
         action = "BUY"
-        direction_agents = agg.get("bull_agents", [])
     elif net_signal == "bearish":
         action = "SELL"
-        direction_agents = agg.get("bear_agents", [])
     else:
         return 0.0, round(conviction, 3), "HOLD", 0.0
 
-    consensus_ratio = len(direction_agents) / n_agents if n_agents > 0 else 0.0
+    # Consensus is now dimension-based (pre-computed in _weighted_signals).
+    # e.g. 3 out of 4 active dimensions agree → 0.75
+    consensus_ratio = agg.get("consensus_ratio", 0.0)
 
     if consensus_ratio < MIN_CONSENSUS_RATIO:
         return 0.0, round(conviction, 3), "HOLD", consensus_ratio
@@ -493,6 +612,19 @@ def _compute_sizing(
         sizing = min(sizing, 10.0)
 
     sizing = round(min(sizing, MAX_SINGLE_POSITION), 1)
+
+    # ── Macro regime hard cap (FIX C2) ────────────────────────────────────
+    # Applied LAST — overrides all other sizing when macro_agent signals
+    # RISK_OFF (deep yield-curve inversion OR VIX crisis).
+    macro_regime = _get_macro_regime(state)
+    macro_cap = MACRO_REGIME_POSITION_CAPS.get(macro_regime, 12.0)
+    if sizing > macro_cap:
+        logger.info(
+            "_compute_sizing %s: macro cap %.1f%% → %.1f%% (regime=%s)",
+            ticker, sizing, macro_cap, macro_regime,
+        )
+        sizing = round(macro_cap, 1)
+
     return sizing, round(conviction, 3), action, consensus_ratio
 
 
@@ -571,14 +703,22 @@ def _enrich_with_trade_levels(
 
         rec["weighted_conviction"] = wc
 
+        n_dims    = agg.get("n_dims", 0)
+        dim_scores = agg.get("dim_scores", {})
+        dim_str   = " | ".join(
+            f"{k}:{v:+.3f}" for k, v in sorted(dim_scores.items())
+        ) if dim_scores else ""
+
         if action == "BUY":
             votes = agg.get("bull_agents", [])
-            rec["consensus"] = f"{len(votes)}/{n} bullish" if n else "—"
+            base  = f"{len(votes)}/{n} agents bullish"
         elif action == "SELL":
             votes = agg.get("bear_agents", [])
-            rec["consensus"] = f"{len(votes)}/{n} bearish" if n else "—"
+            base  = f"{len(votes)}/{n} agents bearish"
         else:
-            rec["consensus"] = f"{n} agents / mixed"
+            base  = f"{n} agents / mixed"
+
+        rec["consensus"] = f"{base} [{n_dims}D: {dim_str}]" if dim_str else base
 
         # ── Livelli operativi per BUY/SELL ────────────────────────────────
         levels = trade_levels.get(ticker) if action in ("BUY", "SELL") else None
@@ -724,8 +864,14 @@ def _build_llm_prompt(
                 f"SL={p['stop_loss']:.2f} TP={p['take_profit']:.2f} size=${p['size_usd']:,.0f}"
             )
 
+        dim_scores = agg.get("dim_scores", {})
+        dim_str = " | ".join(
+            f"{k}:{v:+.3f}" for k, v in sorted(dim_scores.items())
+        ) if dim_scores else "—"
+
         ticker_block += (
             f"\n{t}: net_score={agg.get('net_score', 0):.3f}, "
+            f"dims=[{dim_str}], "
             f"avg_confidence={agg.get('avg_confidence', 0):.2f}, "
             f"WC={wc:+.4f}, "
             f"consensus={pre.get('consensus','—')}, "
@@ -779,6 +925,84 @@ Use exactly the action and sizing_pct values provided above – do not change th
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Run log persistence
+# ══════════════════════════════════════════════════════════════════════════════
+
+_RUNS_LOG_PATH = pathlib.Path("logs/runs.jsonl")
+
+
+def _write_run_log(
+    state: AgentState,
+    weighted: dict[str, dict],
+    pre_recs: list[dict],
+    portfolio_summary: str,
+    risk_notes: str,
+    macro_regime: str,
+) -> None:
+    """
+    Append one JSON line to logs/runs.jsonl for ex-post analysis.
+
+    Schema (all fields JSON-serialisable):
+      run_id, timestamp, tickers,
+      macro_regime,
+      per_ticker: {ticker: {net_score, dim_scores, weighted_conviction, consensus_ratio}},
+      recommendations: [{ticker, action, sizing_pct, conviction, reasoning}],
+      portfolio_summary, risk_notes
+    """
+    try:
+        data = state.get("data", {})
+        run_id = data.get("run_id") or state.get("metadata", {}).get("run_id", "unknown")
+        tickers = data.get("tickers", [])
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        per_ticker: dict = {}
+        for ticker, agg in weighted.items():
+            per_ticker[ticker] = {
+                "net_score":           agg.get("net_score", 0.0),
+                "dim_scores":          agg.get("dim_scores", {}),
+                "weighted_conviction": agg.get("weighted_conviction", 0.0),
+                "consensus_ratio":     agg.get("consensus_ratio", 0.0),
+                "n_dims":              agg.get("n_dims", 0),
+                "n_agents":            agg.get("n_agents", 0),
+            }
+
+        recs_log = [
+            {
+                "ticker":     r.get("ticker"),
+                "action":     r.get("action"),
+                "sizing_pct": r.get("sizing_pct"),
+                "conviction": r.get("conviction"),
+                "wc":         r.get("weighted_conviction"),
+                "reasoning":  r.get("reasoning", ""),
+            }
+            for r in pre_recs
+        ]
+
+        entry = {
+            "run_id":            run_id,
+            "timestamp":         ts,
+            "tickers":           tickers,
+            "macro_regime":      macro_regime,
+            "per_ticker":        per_ticker,
+            "recommendations":   recs_log,
+            "portfolio_summary": portfolio_summary,
+            "risk_notes":        risk_notes,
+        }
+
+        _RUNS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _RUNS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        logger.info(
+            "[portfolio_manager] run log appended to %s (run_id=%s)",
+            _RUNS_LOG_PATH, run_id,
+        )
+
+    except Exception as exc:
+        logger.warning("[portfolio_manager] _write_run_log failed: %s", exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Main agent node
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -816,10 +1040,38 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     # 1. Weighted signal aggregation (includes WC)
     weighted = _weighted_signals(state, tickers)
 
-    # Log WC per ticker
+    # Log macro regime detected by macro_agent
+    macro_regime_detected = _get_macro_regime(state)
+    macro_cap = MACRO_REGIME_POSITION_CAPS.get(macro_regime_detected, 12.0)
+    logger.info(
+        "[portfolio_manager] macro_regime=%s → position_cap=%.0f%%",
+        macro_regime_detected, macro_cap,
+    )
+    progress.update_status(
+        AGENT_ID, None,
+        f"macro_regime={macro_regime_detected} cap={macro_cap:.0f}%",
+    )
+
+    # Log dimension scores + WC per ticker
     for ticker, agg in weighted.items():
-        wc = agg.get("weighted_conviction", 0.0)
-        progress.update_status(AGENT_ID, ticker, f"WC={wc:+.4f}")
+        wc         = agg.get("weighted_conviction", 0.0)
+        n_dims     = agg.get("n_dims", 0)
+        dim_scores = agg.get("dim_scores", {})
+        dim_log    = " | ".join(
+            f"{k}:{v:+.3f}" for k, v in sorted(dim_scores.items())
+        )
+        logger.info(
+            "[portfolio_manager] %s: net_score=%+.4f n_dims=%d WC=%+.4f | %s",
+            ticker,
+            agg.get("net_score", 0.0),
+            n_dims,
+            wc,
+            dim_log if dim_log else "no dims",
+        )
+        progress.update_status(
+            AGENT_ID, ticker,
+            f"net={agg.get('net_score',0):+.3f} WC={wc:+.4f} dims=[{dim_log}]",
+        )
 
     # 2. Pre-compute sizing
     progress.update_status(AGENT_ID, None, "Computing position sizing")
@@ -925,7 +1177,17 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     except Exception as _e:
         logger.warning("[portfolio_manager] Failed to save portfolio_decisions: %s", _e)
 
-    # 6. Build output
+    # 6. Persist run log
+    _write_run_log(
+        state=state,
+        weighted=weighted,
+        pre_recs=pre_recs,
+        portfolio_summary=portfolio_summary,
+        risk_notes=risk_notes,
+        macro_regime=macro_regime_detected,
+    )
+
+    # 7. Build output
     portfolio_recommendations = {
         "recommendations":   pre_recs,
         "portfolio_summary": portfolio_summary,

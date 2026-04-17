@@ -20,7 +20,8 @@ Topology (grafo statico, comportamento condizionale via skip wrapper)
       ├─► technicals_node        │
       ├─► fundamentals_node      │
       ├─► sentiment_node         │
-      └─► breakout_momentum_node ┘
+      ├─► breakout_momentum_node │
+      └─► macro_node             ┘
                                  │
                                  ▼
                         devils_advocate_node   ← saltato se skip_devils_advocate=True
@@ -161,6 +162,7 @@ _ALL_ANALYST_NODES: list[tuple[str, Callable]] = [
     ("fundamentals",      _import_or_stub("src.agents.fundamentals",      "fundamentals_analyst_agent", "fundamentals")),
     ("sentiment",         _import_or_stub("src.agents.sentiment",         "sentiment_agent",            "sentiment")),
     ("breakout_momentum", _import_or_stub("src.agents.breakout_momentum", "breakout_momentum_agent",    "breakout_momentum")),
+    ("macro",             _import_or_stub("src.agents.macro_agent",       "macro_agent",                "macro")),
 ]
 
 # Applica il wrapper condizionale a ogni analyst node

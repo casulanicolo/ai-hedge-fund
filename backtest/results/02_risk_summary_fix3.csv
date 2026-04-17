@@ -1,0 +1,17 @@
+metrica,valore
+Ticker analizzati,30
+Periodo,2025-04-14 - 2026-04-10
+VaR 95% portfolio (12m),1.70%
+VaR warning breach (>4%),NO
+Max Drawdown portfolio (12m),11.75%
+DD warning breach (>15%),NO
+VaR 95% ultimi 30gg,1.97%
+Max DD ultimi 30gg,8.04%
+Perdita media worst 20gg,1.92%
+Correlazione media,0.162
+Correlazione massima,0.887 (V/MA)
+Settori con breach 30% cap,Nessuno
+Ticker piu rischioso (VaR),MSTR
+VaR del piu rischioso,7.25%
+Ticker meno rischioso (VaR),JNJ
+VaR del meno rischioso,1.40%
