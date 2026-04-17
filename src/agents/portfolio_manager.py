@@ -1168,7 +1168,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         from src.db.init_db import get_connection, insert_portfolio_decision
         from datetime import datetime, timezone
         _ts   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        _rid  = data.get("run_id", "unknown")
+        _rid  = data.get("run_id") or state.get("metadata", {}).get("run_id", "unknown")
         _conn = get_connection()
         for rec in pre_recs:
             insert_portfolio_decision(_conn, _rid, _ts, rec, weighted)
