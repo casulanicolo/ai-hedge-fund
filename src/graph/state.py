@@ -54,9 +54,15 @@ class AgentOutput(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _merge_dicts(a: dict, b: dict) -> dict:
-    """Shallow-merge two dicts. b values overwrite a on conflict."""
+    """Deep-merge two dicts. Nested dicts are merged recursively so that
+    parallel analyst nodes each writing one key into analyst_signals all
+    accumulate correctly instead of the last writer clobbering the rest."""
     result = dict(a)
-    result.update(b)
+    for key, val in b.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _merge_dicts(result[key], val)
+        else:
+            result[key] = val
     return result
 
 

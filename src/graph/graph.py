@@ -96,8 +96,8 @@ def _import_or_stub(module_path: str, func_name: str, node_name: str) -> Callabl
         fn = getattr(mod, func_name)
         logger.debug("Loaded node %r from %s.%s", node_name, module_path, func_name)
         return fn
-    except (ImportError, AttributeError):
-        logger.debug("Node %r not yet implemented — using stub", node_name)
+    except (ImportError, AttributeError) as exc:
+        logger.error("Node %r import FAILED (%s: %s) — using stub. Fix the import!", node_name, type(exc).__name__, exc)
         return _stub(node_name)
 
 

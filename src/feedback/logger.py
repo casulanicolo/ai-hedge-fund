@@ -102,7 +102,7 @@ def log_predictions(state: dict[str, Any]) -> str:
 
     Returns the run_id used for this batch of inserts (UUID4).
     """
-    run_id    = str(uuid.uuid4())
+    run_id    = state.get("metadata", {}).get("run_id") or str(uuid.uuid4())
     timestamp = _now_utc()
     rows: list[tuple] = []
 
