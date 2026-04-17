@@ -1,13 +1,42 @@
 import os
 import json
 from langchain_anthropic import ChatAnthropic
-from langchain_deepseek import ChatDeepSeek
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_groq import ChatGroq
-from langchain_xai import ChatXAI
-from langchain_openai import ChatOpenAI, AzureChatOpenAI
-from langchain_gigachat import GigaChat
-from langchain_ollama import ChatOllama
+
+try:
+    from langchain_deepseek import ChatDeepSeek
+except ImportError:
+    ChatDeepSeek = None
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:
+    ChatGoogleGenerativeAI = None
+
+try:
+    from langchain_groq import ChatGroq
+except ImportError:
+    ChatGroq = None
+
+try:
+    from langchain_xai import ChatXAI
+except ImportError:
+    ChatXAI = None
+
+try:
+    from langchain_openai import ChatOpenAI, AzureChatOpenAI
+except ImportError:
+    ChatOpenAI = None
+    AzureChatOpenAI = None
+
+try:
+    from langchain_gigachat import GigaChat
+except ImportError:
+    GigaChat = None
+
+try:
+    from langchain_ollama import ChatOllama
+except ImportError:
+    ChatOllama = None
 from enum import Enum
 from pydantic import BaseModel
 from typing import Tuple, List
