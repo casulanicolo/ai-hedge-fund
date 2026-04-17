@@ -6,6 +6,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
+import json
+from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -195,6 +197,120 @@ def pnl_cumulative(sub):
     return (s * 0.01).cumsum()
 
 
+# ── Radar Chart ──────────────────────────────────────────────────────────────
+def plot_dimension_radar(ticker_name: str, current_run_id: str):
+    """
+    Legge logs/runs.jsonl, cerca il run_id corrispondente e disegna un
+    Radar Chart delle 4 dimensioni (FUNDAMENTALS, TECHNICAL, SENTIMENT, MACRO).
+
+    Robustezze applicate:
+    - Path calcolato con Path(__file__).resolve() → infallibile anche su VPS
+    - Errori espliciti nella UI Streamlit (st.error / st.warning / st.info)
+    - run_id normalizzato a str + strip() per evitare type mismatch
+    - Dimensioni mancanti (es. MACRO) escluse dalla media invece di essere
+      forzate a 0.0, per non distorcere colori e logica
+    """
+    # ── 1. Path infallibile basato sul file reale su disco ───────────────────
+    log_path = Path(__file__).resolve().parent.parent / "logs" / "runs.jsonl"
+
+    # ── 2. Validazione anticipata con feedback visibile nella UI ─────────────
+    if not log_path.exists():
+        st.error(
+            f"⚠️ Radar Chart: file di log non trovato.\n"
+            f"Percorso cercato: `{log_path}`\n"
+            f"Assicurati che la pipeline scriva in `logs/runs.jsonl` "
+            f"e che la dashboard venga avviata dalla root del progetto."
+        )
+        return go.Figure()
+
+    # ── 3. Normalizza run_id: strip + cast a str per match sicuro ────────────
+    target_run_id = str(current_run_id).strip()
+
+    dim_scores: dict = {}
+    parse_error: str | None = None
+
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:          # salta righe vuote
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as e:
+                parse_error = f"Riga JSON malformata ignorata: {e}"
+                continue
+
+            if str(data.get("run_id", "")).strip() == target_run_id:
+                dim_scores = (
+                    data
+                    .get("per_ticker", {})
+                    .get(ticker_name, {})
+                    .get("dim_scores", {})
+                )
+                break  # trovato: esci subito
+
+    except PermissionError:
+        st.error(f"❌ Radar Chart: permesso negato su `{log_path}`.")
+        return go.Figure()
+    except OSError as e:
+        st.error(f"❌ Radar Chart: errore I/O — {e}")
+        return go.Figure()
+
+    if parse_error:
+        st.warning(f"⚠️ Radar Chart (avviso parsing): {parse_error}")
+
+    if not dim_scores:
+        st.info(
+            f"ℹ️ Nessun `dim_scores` trovato per **{ticker_name}** "
+            f"nel run `{target_run_id[:8]}…`  "
+            f"(il ticker potrebbe non essere presente in questo run, "
+            f"o il run_id non corrisponde a nessuna riga del log)."
+        )
+        return go.Figure()
+
+    # ── 4. Dimensioni: usa solo quelle presenti nel JSON ────────────────────
+    #    MACRO può mancare → non la forziamo a 0, ma la escludiamo dalla media
+    DIMS = ["FUNDAMENTALS", "TECHNICAL", "SENTIMENT", "MACRO"]
+    labels_present = [d.capitalize() for d in DIMS if d in dim_scores]
+    values_present = [float(dim_scores[d]) for d in DIMS if d in dim_scores]
+
+    if not values_present:
+        st.warning(f"⚠️ `dim_scores` trovato per {ticker_name} ma è vuoto.")
+        return go.Figure()
+
+    # Chiudi il poligono radar (primo punto ripetuto alla fine)
+    theta = labels_present + [labels_present[0]]
+    r     = values_present + [values_present[0]]
+
+    # Media solo sulle dimensioni presenti (non sui missing)
+    avg_score  = sum(values_present) / len(values_present)
+    line_color = "#26a69a" if avg_score >= 0 else "#ef5350"
+    fill_color = "rgba(38,166,154,0.3)" if avg_score >= 0 else "rgba(239,83,80,0.3)"
+
+    missing  = [d for d in DIMS if d not in dim_scores]
+    subtitle = (
+        f"  <sub>({len(values_present)}/4 dim — mancanti: {', '.join(missing)})</sub>"
+        if missing else ""
+    )
+
+    fig = go.Figure(data=go.Scatterpolar(
+        r=r, theta=theta, fill="toself",
+        fillcolor=fill_color,
+        line=dict(color=line_color, width=2),
+    ))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[-1, 1])),
+        showlegend=False,
+        margin=dict(l=30, r=30, t=50, b=30),
+        height=300,
+        title=dict(text=f"Forza Dimensioni: {ticker_name}{subtitle}", font=dict(size=14)),
+    )
+    return fig
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE: OVERVIEW
 # ════════════════════════════════════════════════════════════════════════════
@@ -222,6 +338,44 @@ if page == "🏠 Overview":
         delta_color="normal" if last_run_status == "success" else "inverse",
     )
 
+    # === INIZIO NUOVA SEZIONE: BRIEFING E MACRO ===
+    st.markdown("### 🌍 Contesto di Mercato (Macro)")
+    # (Nota: qui imposto CAUTION come default, ma potrai collegarlo al tuo DB se salvi il regime)
+    macro_regime_attuale = "CAUTION"
+
+    if macro_regime_attuale == "RISK_OFF":
+        st.error("🚨 **ALLARME MACRO (RISK OFF):** Il mercato è estremamente instabile (es. VIX alto). L'IA ha **drasticamente ridotto** la size delle posizioni al 5%. Massima prudenza.")
+    elif macro_regime_attuale == "CAUTION":
+        st.warning("⚠️ **MERCATO INCERTO (CAUTION):** Il contesto macroeconomico presenta incertezze. Limite conservativo del 12% per posizione.")
+    elif macro_regime_attuale == "RISK_ON":
+        st.success("🟢 **MERCATO FAVOREVOLE (RISK ON):** Condizioni macro stabili. Il sistema permette esposizioni fino al 20% per trade.")
+
+    st.markdown("---")
+    st.subheader("🎯 Cosa fare oggi (Daily Briefing)")
+
+    if not decisions.empty:
+        # Prende l'ID dell'ultimo run disponibile
+        latest_run_id = decisions.iloc[0]["run_id"]
+        latest_decisions = decisions[decisions["run_id"] == latest_run_id]
+        # Prende i top 3 BUY
+        df_buys = latest_decisions[latest_decisions['action'] == 'BUY'].head(3)
+
+        if not df_buys.empty:
+            cols = st.columns(len(df_buys))
+            for i, row in enumerate(df_buys.itertuples()):
+                with cols[i]:
+                    st.metric(
+                        label=f"🟢 {row.ticker} (BUY)",
+                        value=f"${row.entry_price:,.2f}" if pd.notna(row.entry_price) else "N/A",
+                        delta=f"TP: ${row.take_profit:,.2f}" if pd.notna(row.take_profit) else ""
+                    )
+                    st.caption(f"SL: ${row.stop_loss:,.2f}" if pd.notna(row.stop_loss) else "")
+                    with st.expander("Perché l'IA lo consiglia?"):
+                        st.write(row.reasoning)
+        else:
+            st.info("Nessun trade consigliato oggi (Tutti HOLD o SELL).")
+    # === FINE NUOVA SEZIONE ===
+
     st.divider()
     col1, col2 = st.columns(2)
 
@@ -236,6 +390,20 @@ if page == "🏠 Overview":
         )
         fig.update_layout(margin=dict(t=20, b=40), height=320)
         st.plotly_chart(fig, use_container_width=True)
+
+    # === RADAR CHART (Aggiornato per la Overview) ===
+    st.markdown("### 🎯 Analisi Dimensionale dei Trade Consigliati")
+    st.write("Visualizzazione dell'allineamento delle 4 dimensioni (Fundamentals, Technical, Sentiment, Macro) per i top trade di oggi:")
+
+    # Usiamo i ticker dei top 3 BUY che abbiamo già calcolato nel Daily Briefing
+    if 'df_buys' in locals() and not df_buys.empty:
+        tickers_da_mostrare = df_buys['ticker'].tolist()
+        radar_cols = st.columns(len(tickers_da_mostrare))
+        for idx, t in enumerate(tickers_da_mostrare):
+            with radar_cols[idx]:
+                st.plotly_chart(plot_dimension_radar(t, latest_run_id), use_container_width=True)
+    else:
+        st.info("Nessun trade consigliato su cui mostrare l'analisi dimensionale.")
 
     with col2:
         st.subheader("Segnali per ticker")
@@ -454,14 +622,14 @@ elif page == "📊 Decisioni Portfolio":
         <tr style="background:#0d1b2a;color:#a0b4c8;text-align:left;">
           <th style="padding:8px 10px;">Ticker</th>
           <th style="padding:8px 8px;">Azione</th>
-          <th style="padding:8px 8px;">Net Score</th>
-          <th style="padding:8px 8px;">WC</th>
-          <th style="padding:8px 8px;">Conviction</th>
-          <th style="padding:8px 8px;">Consensus</th>
+          <th style="padding:8px 8px;" title="Da -1.0 a +1.0. Oltre +0.25 è un forte segnale di acquisto (Bullish).">Net Score ℹ️</th>
+          <th style="padding:8px 8px;" title="Weighted Conviction: La forza reale. Sopra 0.008 (0.8%) il sistema consiglia il trade.">WC ℹ️</th>
+          <th style="padding:8px 8px;" title="Sicurezza media degli agenti che hanno votato per questa direzione.">Conviction ℹ️</th>
+          <th style="padding:8px 8px;" title="Frazione di dimensioni (Es. Macro, Fundamentals) d'accordo con il trade.">Consensus ℹ️</th>
           <th style="padding:8px 8px;">Entry</th>
           <th style="padding:8px 8px;color:#e07070;">SL</th>
           <th style="padding:8px 8px;color:#70c070;">TP</th>
-          <th style="padding:8px 8px;">Size $</th>
+          <th style="padding:8px 8px;" title="Dimensione consigliata per il trade calcolata sul rischio (VaR) e volatilità.">Size $ ℹ️</th>
           <th style="padding:8px 8px;">R:R</th>
           <th style="padding:8px 8px;">Reasoning</th>
         </tr>
