@@ -4,3 +4,10 @@ __pycache__/
 .env
 *.db
 logs/
+
+# Runtime artifacts (added Phase 1 cleanup)
+cache/
+logs/
+db/*.db
+db/*.db-wal
+db/*.db-shm
