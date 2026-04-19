@@ -437,6 +437,62 @@ def get_executed_orders(
 
 
 # ─────────────────────────────────────────────
+# CRUD — Monitor Ticks  (Fase 3 – daemon)
+# ─────────────────────────────────────────────
+
+def insert_monitor_tick(conn: sqlite3.Connection, tick) -> int:
+    """
+    Insert a MonitorTick into monitor_ticks.
+    tick must have: timestamp, ticker, current_price, unrealized_pl_pct,
+                    decision, reason, action_taken, broker_order_id.
+    Returns new rowid or 0 on failure.
+    """
+    try:
+        rule = getattr(tick, "rule", None)
+        cur = conn.execute(
+            """
+            INSERT INTO monitor_ticks (
+                timestamp, ticker, current_price, unrealized_pl_pct,
+                decision, reason, action_taken, broker_order_id, rule
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tick.timestamp.isoformat() if hasattr(tick.timestamp, "isoformat") else str(tick.timestamp),
+                tick.ticker,
+                tick.current_price,
+                tick.unrealized_pl_pct,
+                tick.decision,
+                tick.reason,
+                1 if tick.action_taken else 0,
+                tick.broker_order_id,
+                rule,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+    except Exception as exc:
+        logger.warning("[init_db] insert_monitor_tick failed: %s", exc)
+        return 0
+
+
+def get_monitor_ticks(
+    conn: sqlite3.Connection,
+    ticker: Optional[str] = None,
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    """Fetch monitor ticks, newest first, optionally filtered by ticker."""
+    if ticker:
+        return conn.execute(
+            "SELECT * FROM monitor_ticks WHERE ticker = ? ORDER BY timestamp DESC LIMIT ?",
+            (ticker, limit),
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM monitor_ticks ORDER BY timestamp DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+# ─────────────────────────────────────────────
 # CLI entrypoint
 # ─────────────────────────────────────────────
 

@@ -1,21 +1,24 @@
 """
 src/monitor/daemon.py
+──────────────────────
+Athanor Alpha — Active Position Monitor Daemon (Fase 3)
 
-Athanor Alpha — Monitor Daemon
-Runs every 15 minutes during US market hours (14:30–21:00 UTC, Mon–Fri).
+Runs every CYCLE_SECONDS during US market hours (14:30–21:00 UTC, Mon–Fri).
+Reads live positions from Alpaca, evaluates exit rules, executes decisions.
 
-Each cycle:
-  1. Load positions from config/positions.json
-  2. Run price + news checks via alert_builder
-  3. Send immediate email for HIGH alerts (rate limited: 1/ticker/hour)
-  4. Send digest email if any MEDIUM alerts fired (or if --digest flag used)
-  5. Print all results to stdout (logged via shell redirect)
+Exit conditions:
+  - .kill_monitor file created in project root → clean shutdown
+  - Market closes (16:00 ET / 21:00 UTC) → sys.exit(0)
+  - --now flag → single cycle then exit
 
 Usage:
-    python -m src.monitor.daemon           # normal mode (waits for market hours)
-    python -m src.monitor.daemon --now     # force one cycle immediately (for testing)
-    python -m src.monitor.daemon --digest  # force one cycle + always send digest email
+    python -m src.monitor.daemon                    # normal daemon (market hours)
+    python -m src.monitor.daemon --now              # one cycle immediately, then exit
+    python -m src.monitor.daemon --llm-monitor      # enable LLM review layer
+    python -m src.monitor.daemon --cycle 30         # 30-second cycle
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -24,193 +27,460 @@ import pathlib
 import sys
 import time
 from datetime import datetime, timezone
+from math import floor
+from typing import Optional
 
-from src.monitor.alert_builder import run_all_positions
-from src.alerts.email_sender import send_alert, send_digest
-from src.alerts.templates import build_alert_html, build_digest_html
+from dotenv import load_dotenv
 
-# ── Logging setup ────────────────────────────────────────────────────────────
+load_dotenv()
+
+# ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)-8s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("athanor.monitor")
 
 # ── Constants ────────────────────────────────────────────────────────────────
-POSITIONS_PATH   = pathlib.Path("config/positions.json")
-CYCLE_MINUTES    = 15
-MARKET_OPEN_UTC  = (14, 30)   # 14:30 UTC = 09:30 EST
-MARKET_CLOSE_UTC = (21,  0)   # 21:00 UTC = 16:00 EST
-MARKET_DAYS      = {0, 1, 2, 3, 4}   # Mon=0 … Fri=4
+KILL_SWITCH_PATH  = pathlib.Path(".kill_monitor")
+DEFAULT_CYCLE_SEC = 60
+MARKET_OPEN_UTC   = (14, 30)   # 14:30 UTC = 09:30 ET
+MARKET_CLOSE_UTC  = (21,  0)   # 21:00 UTC = 16:00 ET
+MARKET_DAYS       = {0, 1, 2, 3, 4}
 
 
-# ── Market hours check ───────────────────────────────────────────────────────
-def is_market_hours(now: datetime | None = None) -> bool:
-    """Return True if `now` (UTC) falls within US equity market hours."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Market hours helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _market_minutes(now: datetime) -> int:
+    return now.hour * 60 + now.minute
+
+
+def is_market_hours(now: Optional[datetime] = None) -> bool:
     now = now or datetime.now(timezone.utc)
     if now.weekday() not in MARKET_DAYS:
         return False
-    open_minutes    = MARKET_OPEN_UTC[0]  * 60 + MARKET_OPEN_UTC[1]
-    close_minutes   = MARKET_CLOSE_UTC[0] * 60 + MARKET_CLOSE_UTC[1]
-    current_minutes = now.hour * 60 + now.minute
-    return open_minutes <= current_minutes < close_minutes
+    m = _market_minutes(now)
+    open_m  = MARKET_OPEN_UTC[0]  * 60 + MARKET_OPEN_UTC[1]
+    close_m = MARKET_CLOSE_UTC[0] * 60 + MARKET_CLOSE_UTC[1]
+    return open_m <= m < close_m
 
 
-# ── Positions loader ─────────────────────────────────────────────────────────
-def load_positions() -> list[dict]:
-    """Load and validate positions from config/positions.json."""
-    if not POSITIONS_PATH.exists():
-        log.error(f"positions.json not found at {POSITIONS_PATH}")
-        return []
+def is_market_just_closed(now: Optional[datetime] = None) -> bool:
+    """Return True if market closed in the last 2 minutes (post-session flush)."""
+    now = now or datetime.now(timezone.utc)
+    m = _market_minutes(now)
+    close_m = MARKET_CLOSE_UTC[0] * 60 + MARKET_CLOSE_UTC[1]
+    return close_m <= m <= close_m + 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DB helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_position_db_data(ticker: str) -> dict:
+    """
+    Look up stop_loss, take_profit, run_id, opened_at from executed_orders.
+    Returns the most recent OPEN_LONG / OPEN_SHORT record for this ticker.
+    """
     try:
-        data = json.loads(POSITIONS_PATH.read_text(encoding="utf-8"))
-        positions = data.get("positions", [])
-        valid = []
-        for p in positions:
-            if "ticker" not in p or "entry_price" not in p:
-                log.warning(f"Skipping invalid position entry: {p}")
-                continue
-            valid.append(p)
-        return valid
+        from src.db.init_db import get_connection
+        conn = get_connection()
+        row = conn.execute(
+            """
+            SELECT stop_loss, take_profit, run_id, submitted_at, quantity
+            FROM executed_orders
+            WHERE ticker = ? AND action IN ('OPEN_LONG', 'OPEN_SHORT')
+              AND status NOT IN ('REJECTED', 'CANCELED')
+            ORDER BY submitted_at DESC LIMIT 1
+            """,
+            (ticker,),
+        ).fetchone()
+        conn.close()
+        if row:
+            return {
+                "stop_loss":    row["stop_loss"],
+                "take_profit":  row["take_profit"],
+                "run_id":       row["run_id"],
+                "opened_at":    row["submitted_at"],
+                "original_qty": row["quantity"],
+            }
     except Exception as exc:
-        log.error(f"Failed to load positions.json: {exc}")
-        return []
+        log.warning("[daemon] _get_position_db_data %s failed: %s", ticker, exc)
+    return {}
 
 
-# ── Single monitoring cycle ──────────────────────────────────────────────────
-def run_cycle(force_digest: bool = False) -> None:
-    """
-    Execute one full monitoring cycle across all positions.
-    force_digest=True → always send digest email regardless of alert count.
-    """
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    log.info(f"── Cycle start {now_str} ──────────────────────────────────")
-
-    positions = load_positions()
-    if not positions:
-        log.warning("No valid positions found. Skipping cycle.")
-        return
-
-    log.info(f"Checking {len(positions)} position(s): "
-             f"{', '.join(p['ticker'] for p in positions)}")
-
-    alerts = run_all_positions(positions)
-
-    # ── Counts ───────────────────────────────────────────────────────────
-    high_alerts   = [a for a in alerts if a["severity"] == "HIGH"]
-    medium_alerts = [a for a in alerts if a["severity"] == "MEDIUM"]
-    low_alerts    = [a for a in alerts if a["severity"] == "LOW"]
-
-    log.info(f"Results → HIGH: {len(high_alerts)} | "
-             f"MEDIUM: {len(medium_alerts)} | "
-             f"LOW: {len(low_alerts)}")
-
-    # ── Process each position ─────────────────────────────────────────────
-    for a in alerts:
-        if a.get("error"):
-            log.error(f"[{a['ticker']}] Error during check: {a['error']}")
-            continue
-
-        log.info(a["summary_line"])
-
-        # Print full text block to stdout/log
-        if a["has_alert"]:
-            print(a["message"])
-            print()
-
-        # ── HIGH alert → immediate email ──────────────────────────────
-        if a["severity"] == "HIGH" and a["has_alert"]:
-            ticker    = a["ticker"]
-            subject   = f"[HIGH ALERT] Athanor Alpha — {ticker}"
-            body_text = a["message"]
-            body_html = build_alert_html(a)
-
-            sent = send_alert(
-                ticker    = ticker,
-                subject   = subject,
-                body_text = body_text,
-                body_html = body_html,
-            )
-            if sent:
-                log.info(f"[{ticker}] HIGH alert email sent.")
-            else:
-                log.info(f"[{ticker}] HIGH alert email skipped (rate limited or error).")
-
-    # ── MEDIUM or forced → digest email ──────────────────────────────────
-    if medium_alerts or force_digest:
-        reason = "forced --digest flag" if force_digest else f"{len(medium_alerts)} MEDIUM alert(s)"
-        log.info(f"Sending digest email ({reason})...")
-
-        now_str2  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        subject   = f"[DIGEST] Athanor Alpha — {now_str2}"
-
-        lines = [f"Athanor Alpha — Daily Digest — {now_str2}", ""]
-        for a in alerts:
-            lines.append(a.get("summary_line", a["ticker"]))
-        body_text = "\n".join(lines)
-        body_html = build_digest_html(alerts)
-
-        sent = send_digest(subject=subject, body_text=body_text, body_html=body_html)
-        if sent:
-            log.info("Digest email sent.")
-        else:
-            log.warning("Digest email failed — check SMTP config.")
-
-    if not any(a["has_alert"] for a in alerts) and not force_digest:
-        log.info("✓ All clear — no alerts this cycle.")
-
-    log.info("── Cycle complete ───────────────────────────────────────────")
-
-
-# ── Main daemon loop ─────────────────────────────────────────────────────────
-def main(force_now: bool = False, force_digest: bool = False) -> None:
-    log.info("Athanor Alpha Monitor Daemon starting...")
-    log.info(f"Positions file : {POSITIONS_PATH.resolve()}")
-    log.info(f"Cycle interval : {CYCLE_MINUTES} minutes")
-    log.info(f"Market hours   : {MARKET_OPEN_UTC[0]:02d}:{MARKET_OPEN_UTC[1]:02d}–"
-             f"{MARKET_CLOSE_UTC[0]:02d}:{MARKET_CLOSE_UTC[1]:02d} UTC (Mon–Fri)")
-
-    if force_now or force_digest:
-        flag = "--digest" if force_digest else "--now"
-        log.info(f"{flag} flag detected: running one cycle immediately.")
-        run_cycle(force_digest=force_digest)
-        log.info("Done. Exiting.")
-        return
-
-    log.info("Entering market-hours loop. Press Ctrl+C to stop.")
+def _count_prior_partials(ticker: str) -> int:
+    """Count PARTIAL_EXIT ticks for ticker today."""
     try:
-        while True:
-            now = datetime.now(timezone.utc)
-            if is_market_hours(now):
-                run_cycle()
-                log.info(f"Sleeping {CYCLE_MINUTES} minutes until next cycle...")
-                time.sleep(CYCLE_MINUTES * 60)
-            else:
-                day_name = now.strftime("%A")
-                log.info(
-                    f"Outside market hours ({day_name} "
-                    f"{now.strftime('%H:%M')} UTC). "
-                    f"Waiting 5 min..."
+        from src.db.init_db import get_connection
+        conn = get_connection()
+        today = datetime.now(timezone.utc).date().isoformat()
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM monitor_ticks
+            WHERE ticker = ? AND decision = 'PARTIAL_EXIT'
+              AND DATE(timestamp) = ?
+            """,
+            (ticker, today),
+        ).fetchone()
+        conn.close()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
+def _log_tick_to_db(tick) -> None:
+    try:
+        from src.db.init_db import get_connection, insert_monitor_tick
+        conn = get_connection()
+        insert_monitor_tick(conn, tick)
+        conn.close()
+    except Exception as exc:
+        log.warning("[daemon] _log_tick_to_db failed: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Position enrichment
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _enrich_position(raw_pos, current_price: float) -> "EnrichedPosition":
+    from src.monitor.monitor_state import EnrichedPosition
+
+    db_data   = _get_position_db_data(raw_pos.ticker)
+    opened_at = None
+    days_open  = 0.0
+
+    if db_data.get("opened_at"):
+        try:
+            from datetime import datetime, timezone
+            opened_at = datetime.fromisoformat(db_data["opened_at"].replace("Z", "+00:00"))
+            days_open = (datetime.now(timezone.utc) - opened_at).total_seconds() / 86400.0
+        except Exception:
+            pass
+
+    prior_partials = _count_prior_partials(raw_pos.ticker)
+
+    return EnrichedPosition(
+        ticker=raw_pos.ticker,
+        qty=float(raw_pos.qty),
+        market_value=float(raw_pos.market_value),
+        avg_entry_price=float(raw_pos.avg_entry_price),
+        unrealized_pl=float(raw_pos.unrealized_pl),
+        side=str(raw_pos.side),
+        current_price=current_price,
+        stop_loss=db_data.get("stop_loss"),
+        take_profit=db_data.get("take_profit"),
+        run_id=db_data.get("run_id"),
+        opened_at=opened_at,
+        days_open=days_open,
+        original_qty=db_data.get("original_qty"),
+        prior_partials_count=prior_partials,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Decision execution
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _execute_decision(
+    pos,
+    decision,
+    adapter,
+    run_id: str,
+) -> tuple[bool, Optional[str]]:
+    """
+    Submit the TradeOrder corresponding to the ExitDecision.
+    Returns (action_taken, broker_order_id).
+    """
+    from math import floor as _floor
+    from src.execution.orders import TradeOrder
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc)
+
+    if decision.action == "HOLD":
+        return False, None
+
+    if decision.action == "ADJUST_TRAILING_STOP":
+        order = TradeOrder(
+            ticker=pos.ticker,
+            action="ADJUST_SL",
+            quantity=None,
+            notional_usd=None,
+            order_type="MARKET",
+            limit_price=None,
+            stop_loss=decision.new_stop,
+            take_profit=None,
+            time_in_force="DAY",
+            conviction=0.0,
+            weighted_conviction=0.0,
+            regime_at_decision="CAUTION",
+            reasoning=decision.reason[:500],
+            agent_contributions={},
+            created_at=ts,
+            run_id=run_id,
+        )
+        result = adapter.submit_order(order)
+        return result.success, result.broker_order_id
+
+    if decision.action in ("FULL_EXIT", "PARTIAL_EXIT"):
+        qty = int(abs(pos.qty))
+        if decision.action == "PARTIAL_EXIT" and decision.percentage:
+            qty = max(1, _floor(abs(pos.qty) * decision.percentage))
+
+        order = TradeOrder(
+            ticker=pos.ticker,
+            action="SCALE_OUT" if decision.action == "PARTIAL_EXIT" else "CLOSE",
+            quantity=qty,
+            notional_usd=None,
+            order_type="MARKET",
+            limit_price=None,
+            stop_loss=None,
+            take_profit=None,
+            time_in_force="DAY",
+            conviction=0.0,
+            weighted_conviction=0.0,
+            regime_at_decision="CAUTION",
+            reasoning=decision.reason[:500],
+            agent_contributions={},
+            created_at=ts,
+            run_id=run_id,
+        )
+        result = adapter.submit_order(order)
+        return result.success, result.broker_order_id
+
+    return False, None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daemon
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ActiveMonitorDaemon:
+    def __init__(
+        self,
+        cycle_seconds: int = DEFAULT_CYCLE_SEC,
+        llm_monitor: bool = False,
+        run_id: str = "monitor",
+    ):
+        from src.execution.alpaca_adapter import AlpacaBrokerAdapter
+        self._adapter     = AlpacaBrokerAdapter()
+        self._cycle_sec   = cycle_seconds
+        self._llm_monitor = llm_monitor
+        self._run_id      = run_id
+
+    def _should_kill(self) -> bool:
+        if KILL_SWITCH_PATH.exists():
+            log.info("[daemon] Kill switch detected — shutting down cleanly.")
+            return True
+        return False
+
+    # ── Single tick ───────────────────────────────────────────────────────────
+
+    def run_tick(self) -> list:
+        from src.monitor.monitor_state import MonitorTick
+        from src.monitor.exit_rules import evaluate_all_rules
+        from src.monitor.price_checker import (
+            get_ohlcv_5min, get_daily_atr, get_avg_daily_volume, get_current_price,
+        )
+
+        try:
+            clock     = self._adapter.get_clock()
+            raw_positions = self._adapter.get_positions()
+        except Exception as exc:
+            log.error("[daemon] Failed to get positions/clock from Alpaca: %s", exc)
+            return []
+
+        if not raw_positions:
+            log.info("[daemon] No open positions — nothing to evaluate.")
+            return []
+
+        log.info("[daemon] Evaluating %d position(s): %s",
+                 len(raw_positions), [p.ticker for p in raw_positions])
+
+        ticks = []
+        for raw in raw_positions:
+            ticker = raw.ticker
+            try:
+                current_price = get_current_price(ticker) or (
+                    abs(float(raw.market_value) / float(raw.qty))
+                    if raw.qty else float(raw.avg_entry_price)
                 )
-                time.sleep(5 * 60)
-    except KeyboardInterrupt:
-        log.info("Daemon stopped by user (Ctrl+C).")
+                pos         = _enrich_position(raw, current_price)
+                ohlcv_5min  = get_ohlcv_5min(ticker)
+                atr         = get_daily_atr(ticker)
+                avg_vol     = get_avg_daily_volume(ticker)
+                age_hours   = pos.days_open * 24.0
+
+                decision = evaluate_all_rules(
+                    pos=pos,
+                    clock=clock,
+                    ohlcv_5min=ohlcv_5min,
+                    atr=atr,
+                    avg_daily_volume=avg_vol,
+                    run_id_age_hours=age_hours,
+                )
+
+                # Optional LLM layer
+                if (
+                    self._llm_monitor
+                    and decision.action == "HOLD"
+                    and atr > 0
+                ):
+                    from src.monitor.llm_reviewer import should_review, review_position
+                    if should_review(pos, atr):
+                        llm_d = review_position(pos, atr, ohlcv_5min)
+                        if llm_d:
+                            decision = llm_d
+                            log.info("[daemon] LLM override for %s: %s", ticker, decision.action)
+
+                # Execute
+                pl_pct = (
+                    float(raw.unrealized_pl) / (float(raw.avg_entry_price) * abs(float(raw.qty)))
+                    if raw.avg_entry_price and raw.qty else None
+                )
+
+                action_taken, broker_id = False, None
+                if decision.action != "HOLD":
+                    log.info(
+                        "[daemon] %s → %s | %s",
+                        ticker, decision.action, decision.reason,
+                    )
+                    action_taken, broker_id = _execute_decision(
+                        pos, decision, self._adapter, self._run_id
+                    )
+                    if action_taken:
+                        self._send_event_email(ticker, decision, current_price, pl_pct)
+
+                tick = MonitorTick(
+                    timestamp=datetime.now(timezone.utc),
+                    ticker=ticker,
+                    current_price=current_price,
+                    unrealized_pl_pct=pl_pct,
+                    decision=decision.action,
+                    reason=decision.reason,
+                    action_taken=action_taken,
+                    broker_order_id=broker_id,
+                )
+                _log_tick_to_db(tick)
+                ticks.append(tick)
+
+                log.info(
+                    "[daemon] %s | price=%.2f | P&L=%.2f%% | %s | action_taken=%s",
+                    ticker, current_price,
+                    (pl_pct or 0) * 100,
+                    decision.action,
+                    action_taken,
+                )
+
+            except Exception as exc:
+                log.error("[daemon] Error processing %s: %s", ticker, exc, exc_info=True)
+
+        return ticks
+
+    # ── Email on action events (not on every tick) ────────────────────────────
+
+    def _send_event_email(
+        self,
+        ticker: str,
+        decision,
+        current_price: float,
+        pl_pct: Optional[float],
+    ) -> None:
+        try:
+            from src.alerts.email_sender import send_alert
+            subject = f"[MONITOR] {decision.action} — {ticker}"
+            body = (
+                f"Athanor Alpha Monitor — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                f"Ticker  : {ticker}\n"
+                f"Action  : {decision.action}\n"
+                f"Rule    : {decision.rule}\n"
+                f"Price   : ${current_price:.2f}\n"
+                f"P&L     : {(pl_pct or 0)*100:+.2f}%\n"
+                f"Reason  : {decision.reason}\n"
+            )
+            send_alert(ticker=ticker, subject=subject, body_text=body)
+        except Exception as exc:
+            log.warning("[daemon] Event email failed: %s", exc)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        log.info("Active Monitor Daemon started | cycle=%ds | llm=%s",
+                 self._cycle_sec, self._llm_monitor)
+        log.info("Kill switch: create file '%s' to stop cleanly.", KILL_SWITCH_PATH)
+
+        try:
+            while True:
+                if self._should_kill():
+                    sys.exit(0)
+
+                now = datetime.now(timezone.utc)
+
+                if not is_market_hours(now):
+                    if is_market_just_closed(now):
+                        log.info("[daemon] Market closed — flushing digest and exiting.")
+                        self._flush_eod_digest()
+                        sys.exit(0)
+                    log.debug("[daemon] Outside market hours (%s UTC) — sleeping 5min.", now.strftime("%H:%M"))
+                    time.sleep(5 * 60)
+                    continue
+
+                self.run_tick()
+
+                if self._should_kill():
+                    sys.exit(0)
+
+                time.sleep(self._cycle_sec)
+
+        except KeyboardInterrupt:
+            log.info("[daemon] Stopped by user (Ctrl+C).")
+            sys.exit(0)
+
+    def _flush_eod_digest(self) -> None:
+        """Send any buffered emails as end-of-day digest."""
+        try:
+            from src.alerts.email_sender import flush_digest_buffer
+            flush_digest_buffer()
+        except Exception as exc:
+            log.warning("[daemon] EOD digest flush failed: %s", exc)
 
 
-# ── CLI entry point ──────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Athanor Alpha Monitor Daemon")
-    parser.add_argument(
-        "--now",
-        action="store_true",
-        help="Run one cycle immediately (ignore market hours) then exit.",
-    )
-    parser.add_argument(
-        "--digest",
-        action="store_true",
-        help="Run one cycle immediately and always send digest email, then exit.",
-    )
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    import uuid
+
+    parser = argparse.ArgumentParser(description="Athanor Alpha Active Monitor Daemon")
+    parser.add_argument("--now", action="store_true",
+                        help="Run one cycle immediately then exit (ignore market hours).")
+    parser.add_argument("--llm-monitor", action="store_true",
+                        help="Enable optional LLM review layer (Haiku).")
+    parser.add_argument("--cycle", type=int, default=DEFAULT_CYCLE_SEC,
+                        help=f"Cycle interval in seconds (default: {DEFAULT_CYCLE_SEC}).")
     args = parser.parse_args()
-    main(force_now=args.now, force_digest=args.digest)
+
+    run_id = f"monitor-{uuid.uuid4().hex[:8]}"
+    daemon = ActiveMonitorDaemon(
+        cycle_seconds=args.cycle,
+        llm_monitor=args.llm_monitor,
+        run_id=run_id,
+    )
+
+    if args.now:
+        log.info("--now: running single cycle then exiting.")
+        daemon.run_tick()
+        log.info("Done.")
+        sys.exit(0)
+
+    daemon.run()
+
+
+if __name__ == "__main__":
+    main()

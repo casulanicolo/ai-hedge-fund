@@ -178,3 +178,24 @@ CREATE TABLE IF NOT EXISTS executed_orders (
 
 CREATE INDEX IF NOT EXISTS idx_executed_orders_run            ON executed_orders(run_id);
 CREATE INDEX IF NOT EXISTS idx_executed_orders_ticker_status  ON executed_orders(ticker, status);
+
+-- ─────────────────────────────────────────────
+-- 9. MONITOR TICKS  (Fase 3 – active daemon)
+-- One row per position evaluation cycle.
+-- Tracks every decision the daemon makes (HOLD or action).
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS monitor_ticks (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp           TEXT    NOT NULL,           -- ISO-8601 UTC
+    ticker              TEXT    NOT NULL,
+    current_price       REAL,
+    unrealized_pl_pct   REAL,
+    decision            TEXT    NOT NULL,           -- HOLD | PARTIAL_EXIT | FULL_EXIT | ADJUST_TRAILING_STOP
+    reason              TEXT    NOT NULL,
+    action_taken        INTEGER NOT NULL DEFAULT 0, -- 1 if an order was submitted
+    broker_order_id     TEXT,                       -- populated when action_taken = 1
+    rule                TEXT                        -- which exit rule fired (for audit)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitor_ticks_ticker ON monitor_ticks(ticker, timestamp);
+CREATE INDEX IF NOT EXISTS idx_monitor_ticks_ts     ON monitor_ticks(timestamp);

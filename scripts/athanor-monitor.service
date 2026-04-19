@@ -1,0 +1,23 @@
+[Unit]
+Description=Athanor Alpha — Active Position Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=athanor
+WorkingDirectory=/opt/athanor-alpha
+EnvironmentFile=/opt/athanor-alpha/.env
+ExecStart=/opt/athanor-alpha/.venv/bin/python -m src.monitor.daemon
+Restart=on-failure
+RestartSec=30
+# Exit 0 at market close is intentional — timer restarts next session
+SuccessExitStatus=0
+
+# Logging — captured by journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=athanor-monitor
+
+[Install]
+WantedBy=multi-user.target

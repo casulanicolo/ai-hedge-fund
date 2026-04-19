@@ -1,0 +1,12 @@
+[Unit]
+Description=Athanor Alpha Monitor — start 2 minutes before NYSE open (Mon-Fri)
+Requires=athanor-monitor.service
+
+[Timer]
+# NYSE open = 14:30 UTC; start 2 min early to warm up adapter
+OnCalendar=Mon-Fri 14:28:00 UTC
+AccuracySec=30
+Persistent=false
+
+[Install]
+WantedBy=timers.target

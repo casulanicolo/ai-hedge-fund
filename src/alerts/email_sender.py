@@ -6,7 +6,9 @@ SMTP email sender for Athanor Alpha monitor alerts.
 Features:
   - Reads credentials from .env (python-dotenv)
   - Sends plain-text + HTML multipart emails
-  - Rate limiting: max 1 email per ticker per hour (in-memory)
+  - Rate limiting: max 1 email per ticker per hour (per-ticker)
+  - Global rate limit: max 5 emails per hour across all tickers
+  - Overflow goes into _digest_buffer; flushed at EOD via flush_digest_buffer()
   - Two send functions:
       send_alert(ticker, subject, body_text, body_html)  → immediate alert
       send_digest(subject, body_text, body_html)         → daily digest (no rate limit)
@@ -33,9 +35,16 @@ SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
 ALERT_RECIPIENT = os.getenv("ALERT_RECIPIENT", "")
 
-# ── Rate limiting: {ticker: last_sent_datetime} ──────────────────────────────
+# ── Per-ticker rate limiting ──────────────────────────────────────────────────
 _last_sent: dict[str, datetime] = {}
 RATE_LIMIT_MINUTES = 60   # max 1 urgent email per ticker per hour
+
+# ── Global hourly rate limiting ───────────────────────────────────────────────
+_global_sent_times: list[datetime] = []   # timestamps of emails sent in the last hour
+GLOBAL_HOURLY_CAP = 5
+
+# ── Digest buffer — accumulates emails that hit the global cap ────────────────
+_digest_buffer: list[dict] = []           # list of {ticker, subject, body_text}
 
 
 def _is_rate_limited(ticker: str) -> bool:
@@ -49,6 +58,20 @@ def _is_rate_limited(ticker: str) -> bool:
 
 def _mark_sent(ticker: str) -> None:
     _last_sent[ticker] = datetime.now(timezone.utc)
+
+
+def _is_global_rate_limited() -> bool:
+    """Return True if we've hit the global hourly cap."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+    # Prune stale entries
+    while _global_sent_times and _global_sent_times[0] < cutoff:
+        _global_sent_times.pop(0)
+    return len(_global_sent_times) >= GLOBAL_HOURLY_CAP
+
+
+def _mark_global_sent() -> None:
+    _global_sent_times.append(datetime.now(timezone.utc))
 
 
 def _build_message(
@@ -110,22 +133,34 @@ def send_alert(
     """
     Send an immediate alert email for `ticker`.
 
-    Respects rate limiting (max 1 per ticker per hour) unless force=True.
-    Returns True if email was sent, False if skipped or failed.
+    Respects:
+      - per-ticker rate limit (max 1/hour per ticker)
+      - global rate limit (max 5 emails/hour total)
+    Emails that exceed the global cap are buffered in _digest_buffer
+    and flushed at EOD by flush_digest_buffer().
+    Returns True if email was sent, False if skipped/buffered/failed.
     """
     if not force and _is_rate_limited(ticker):
         last = _last_sent[ticker]
         minutes_ago = int((datetime.now(timezone.utc) - last).total_seconds() / 60)
         log.info(
-            f"Rate limited [{ticker}] — last alert sent {minutes_ago} min ago. "
-            f"Skipping. (use force=True to override)"
+            f"Rate limited [{ticker}] — last alert sent {minutes_ago} min ago. Buffering."
         )
+        _digest_buffer.append({"ticker": ticker, "subject": subject, "body_text": body_text})
+        return False
+
+    if not force and _is_global_rate_limited():
+        log.info(
+            f"Global hourly cap ({GLOBAL_HOURLY_CAP}/h) reached — buffering [{ticker}]: {subject}"
+        )
+        _digest_buffer.append({"ticker": ticker, "subject": subject, "body_text": body_text})
         return False
 
     msg = _build_message(subject, body_text, body_html)
     success = _send(msg)
     if success:
         _mark_sent(ticker)
+        _mark_global_sent()
     return success
 
 
@@ -141,6 +176,32 @@ def send_digest(
     """
     msg = _build_message(subject, body_text, body_html)
     return _send(msg)
+
+
+def flush_digest_buffer() -> bool:
+    """
+    Send all buffered alerts as a single digest email then clear the buffer.
+    Called at EOD by the monitor daemon. Returns True if sent (or buffer empty).
+    """
+    if not _digest_buffer:
+        log.info("[email_sender] Digest buffer empty — nothing to flush.")
+        return True
+
+    count = len(_digest_buffer)
+    lines = [
+        f"[{e['ticker']}] {e['subject']}\n{e['body_text']}\n{'─'*60}"
+        for e in _digest_buffer
+    ]
+    body = f"Athanor Monitor — {count} buffered alert(s)\n\n" + "\n\n".join(lines)
+    subject = f"[Athanor] EOD digest — {count} alert(s) not sent in real-time"
+
+    success = send_digest(subject=subject, body_text=body)
+    if success:
+        log.info("[email_sender] Flushed %d buffered alert(s) as digest.", count)
+        _digest_buffer.clear()
+    else:
+        log.warning("[email_sender] Digest flush failed — buffer retained (%d items).", count)
+    return success
 
 
 def test_connection() -> bool:
