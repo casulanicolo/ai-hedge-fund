@@ -35,12 +35,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)-8s] %(message)s",
+_LOG_DIR = pathlib.Path("logs")
+_LOG_DIR.mkdir(exist_ok=True)
+_LOG_FILE = _LOG_DIR / "monitor.log"
+
+_log_fmt = logging.Formatter(
+    "%(asctime)s [%(levelname)-8s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)],
 )
+_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(_log_fmt)
+_console_handler = logging.StreamHandler(sys.stdout)
+_console_handler.setFormatter(_log_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger("athanor.monitor")
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -266,9 +274,13 @@ class ActiveMonitorDaemon:
         cycle_seconds: int = DEFAULT_CYCLE_SEC,
         llm_monitor: bool = False,
         run_id: str = "monitor",
+        adapter=None,   # injectable for testing; defaults to AlpacaBrokerAdapter()
     ):
-        from src.execution.alpaca_adapter import AlpacaBrokerAdapter
-        self._adapter     = AlpacaBrokerAdapter()
+        if adapter is not None:
+            self._adapter = adapter
+        else:
+            from src.execution.alpaca_adapter import AlpacaBrokerAdapter
+            self._adapter = AlpacaBrokerAdapter()
         self._cycle_sec   = cycle_seconds
         self._llm_monitor = llm_monitor
         self._run_id      = run_id
@@ -353,8 +365,6 @@ class ActiveMonitorDaemon:
                     action_taken, broker_id = _execute_decision(
                         pos, decision, self._adapter, self._run_id
                     )
-                    if action_taken:
-                        self._send_event_email(ticker, decision, current_price, pl_pct)
 
                 tick = MonitorTick(
                     timestamp=datetime.now(timezone.utc),
@@ -365,6 +375,7 @@ class ActiveMonitorDaemon:
                     reason=decision.reason,
                     action_taken=action_taken,
                     broker_order_id=broker_id,
+                    rule=decision.rule,
                 )
                 _log_tick_to_db(tick)
                 ticks.append(tick)
@@ -382,36 +393,13 @@ class ActiveMonitorDaemon:
 
         return ticks
 
-    # ── Email on action events (not on every tick) ────────────────────────────
-
-    def _send_event_email(
-        self,
-        ticker: str,
-        decision,
-        current_price: float,
-        pl_pct: Optional[float],
-    ) -> None:
-        try:
-            from src.alerts.email_sender import send_alert
-            subject = f"[MONITOR] {decision.action} — {ticker}"
-            body = (
-                f"Athanor Alpha Monitor — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-                f"Ticker  : {ticker}\n"
-                f"Action  : {decision.action}\n"
-                f"Rule    : {decision.rule}\n"
-                f"Price   : ${current_price:.2f}\n"
-                f"P&L     : {(pl_pct or 0)*100:+.2f}%\n"
-                f"Reason  : {decision.reason}\n"
-            )
-            send_alert(ticker=ticker, subject=subject, body_text=body)
-        except Exception as exc:
-            log.warning("[daemon] Event email failed: %s", exc)
+    # Email removed from daemon — all reporting via EOD cron (postmarket_builder).
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        log.info("Active Monitor Daemon started | cycle=%ds | llm=%s",
-                 self._cycle_sec, self._llm_monitor)
+        log.info("Monitor started | cycle=%ds | llm=%s | log=%s",
+                 self._cycle_sec, self._llm_monitor, _LOG_FILE)
         log.info("Kill switch: create file '%s' to stop cleanly.", KILL_SWITCH_PATH)
 
         try:
@@ -423,8 +411,7 @@ class ActiveMonitorDaemon:
 
                 if not is_market_hours(now):
                     if is_market_just_closed(now):
-                        log.info("[daemon] Market closed — flushing digest and exiting.")
-                        self._flush_eod_digest()
+                        log.info("[daemon] Market closed — exiting (EOD email handled by cron).")
                         sys.exit(0)
                     log.debug("[daemon] Outside market hours (%s UTC) — sleeping 5min.", now.strftime("%H:%M"))
                     time.sleep(5 * 60)
@@ -441,13 +428,6 @@ class ActiveMonitorDaemon:
             log.info("[daemon] Stopped by user (Ctrl+C).")
             sys.exit(0)
 
-    def _flush_eod_digest(self) -> None:
-        """Send any buffered emails as end-of-day digest."""
-        try:
-            from src.alerts.email_sender import flush_digest_buffer
-            flush_digest_buffer()
-        except Exception as exc:
-            log.warning("[daemon] EOD digest flush failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

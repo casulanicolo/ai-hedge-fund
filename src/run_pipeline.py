@@ -429,7 +429,7 @@ def _build_digest(final_state, tickers, run_id, mode):
 # ---------------------------------------------------------------------------
 # Pipeline principale
 # ---------------------------------------------------------------------------
-def run_pipeline(tickers, send_email=True, mode="full", live=False):
+def run_pipeline(tickers, send_email=False, mode="full", live=False):
     run_id = str(uuid.uuid4())
     mode_label = MODE_CONFIG[mode]["description"]
     log.info("=" * 60)
@@ -468,33 +468,22 @@ def run_pipeline(tickers, send_email=True, mode="full", live=False):
             except Exception as e:
                 log.warning(f"[4/4] adjust_weights warning: {e}")
 
-        if send_email:
-            log.info("[4/4] Invio email digest...")
+        if send_email == "premarket":
+            # Build pre-market HTML preview (no send) — useful for local testing
+            log.info("[4/4] Building pre-market email preview (--email=premarket)...")
             try:
-                from src.alerts.email_sender import send_digest
-                subject, body_text, body_html = _build_digest(final_state, tickers, run_id, mode)
-                ok = send_digest(subject=subject, body_text=body_text, body_html=body_html)
-                if ok:
-                    log.info("[4/4] Email inviata.")
-                else:
-                    log.warning("[4/4] send_digest ha restituito False — controlla SMTP.")
+                from src.alerts.premarket_builder import build_context, build_html, build_text
+                _tickers = final_state.get("data", {}).get("tickers", tickers)
+                ctx  = build_context(tickers=_tickers)
+                html = build_html(ctx)
+                import pathlib, datetime as _dt
+                out_path = pathlib.Path("logs") / f"premarket_preview_{_dt.date.today()}.html"
+                out_path.write_text(html, encoding="utf-8")
+                log.info("[4/4] Pre-market HTML written to %s", out_path)
             except Exception as e:
-                log.warning(f"[4/4] Email fallita (non bloccante): {e}")
-
-            # ── Fase 3: invia anche il report HTML con Segnali Informativi ──
-            try:
-                from src.utils.email_report import send_daily_report
-                from src.agents.portfolio_manager import _weighted_signals
-                _portfolio = final_state.get("data", {}).get("portfolio_recommendations", {})
-                _risk      = final_state.get("data", {}).get("risk_report", {})
-                _tickers   = final_state.get("data", {}).get("tickers", tickers)
-                _weighted  = _weighted_signals(final_state, _tickers)
-                send_daily_report(_portfolio, _risk, weighted=_weighted)
-                log.info("[4/4] Report HTML (Fase 3) inviato.")
-            except Exception as e:
-                log.warning(f"[4/4] Report HTML Fase 3 fallito (non bloccante): {e}")
+                log.warning("[4/4] Pre-market preview failed (non-blocking): %s", e)
         else:
-            log.info("[4/4] Email saltata.")
+            log.info("[4/4] Email: daily briefings handled by cron scripts (send_premarket.ps1 / send_postmarket.ps1).")
 
         _record_run_end(conn, run_id, "completed")
         log.info("=" * 60)
@@ -516,7 +505,12 @@ def run_pipeline(tickers, send_email=True, mode="full", live=False):
 def main():
     parser = argparse.ArgumentParser(description="Athanor Alpha — Pipeline principale")
     parser.add_argument("tickers", nargs="*", help="Ticker opzionali (default: da config/tickers.yaml)")
-    parser.add_argument("--no-email", action="store_true", help="Disabilita invio email")
+    parser.add_argument(
+        "--email",
+        choices=["premarket"],
+        default=None,
+        help="Build pre-market email preview (no send). Default: off. Daily emails sent by cron scripts.",
+    )
     parser.add_argument(
         "--live",
         action="store_true",
@@ -536,7 +530,7 @@ def main():
         log.error("Nessun ticker trovato.")
         sys.exit(1)
 
-    success = run_pipeline(tickers, send_email=not args.no_email, mode=args.mode, live=args.live)
+    success = run_pipeline(tickers, send_email=args.email, mode=args.mode, live=args.live)
     sys.exit(0 if success else 1)
 
 

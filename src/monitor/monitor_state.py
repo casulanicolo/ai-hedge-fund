@@ -31,6 +31,7 @@ class MonitorTick(BaseModel):
     reason: str
     action_taken: bool
     broker_order_id: Optional[str] = None
+    rule: Optional[str] = None  # which exit rule fired (for audit)
 
 
 class EnrichedPosition(PositionSnapshot):

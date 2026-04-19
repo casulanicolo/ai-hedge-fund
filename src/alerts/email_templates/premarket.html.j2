@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Athanor Pre-Market {{ date }}</title>
+</head>
+<body style="margin:0;padding:24px 0;background:#f0f2f5;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f2f5;">
+<tr><td align="center">
+<table width="640" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.10);max-width:640px;">
+
+  {# ── HEADER ── #}
+  <tr>
+    <td style="background:#0d1b2a;padding:22px 32px 18px;">
+      <p style="margin:0;color:#7eb8e8;font-size:10px;letter-spacing:2px;text-transform:uppercase;">Athanor Alpha · Pre-Market Briefing</p>
+      <h1 style="margin:4px 0 0;color:#ffffff;font-size:20px;font-weight:700;letter-spacing:.3px;">{{ date }}</h1>
+      <p style="margin:4px 0 0;color:#a0b4c8;font-size:12px;">Generated {{ generated_at }} UTC</p>
+    </td>
+  </tr>
+
+  {# ── PLAN SUMMARY BAR ── #}
+  <tr>
+    <td style="background:#1a3a5c;padding:12px 32px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="text-align:center;border-right:1px solid #2a5080;padding:6px 12px;">
+            <div style="font-size:24px;font-weight:700;color:#4caf91;">{{ plan.new_count }}</div>
+            <div style="font-size:10px;color:#7eb8e8;text-transform:uppercase;letter-spacing:1px;">New</div>
+          </td>
+          <td style="text-align:center;border-right:1px solid #2a5080;padding:6px 12px;">
+            <div style="font-size:24px;font-weight:700;color:#e8c43a;">{{ plan.hold_count }}</div>
+            <div style="font-size:10px;color:#7eb8e8;text-transform:uppercase;letter-spacing:1px;">Hold</div>
+          </td>
+          <td style="text-align:center;border-right:1px solid #2a5080;padding:6px 12px;">
+            <div style="font-size:24px;font-weight:700;color:#e07070;">{{ plan.close_count }}</div>
+            <div style="font-size:10px;color:#7eb8e8;text-transform:uppercase;letter-spacing:1px;">Close</div>
+          </td>
+          <td style="text-align:center;border-right:1px solid #2a5080;padding:6px 12px;">
+            <div style="font-size:16px;font-weight:700;color:{{ macro.regime_color }};">{{ macro.regime }}</div>
+            <div style="font-size:10px;color:#7eb8e8;text-transform:uppercase;letter-spacing:1px;">Regime</div>
+          </td>
+          <td style="text-align:center;padding:6px 12px;">
+            <div style="font-size:16px;font-weight:700;color:{{ macro.vix_color }};">{{ macro.vix }}</div>
+            <div style="font-size:10px;color:#7eb8e8;text-transform:uppercase;letter-spacing:1px;">VIX {{ macro.vix_trend }}</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  {# ── SECTION 1: MACRO CONTEXT ── #}
+  <tr>
+    <td style="padding:20px 32px 0;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #ecf0f1;padding-bottom:6px;">1 · Macro Context</p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+        <tr>
+          <td style="padding:5px 0;color:#666;width:42%;">VIX ({{ macro.vix_date }})</td>
+          <td style="padding:5px 0;font-weight:600;color:{{ macro.vix_color }};">{{ macro.vix }} {{ macro.vix_trend }}</td>
+        </tr>
+        <tr>
+          <td style="padding:5px 0;color:#666;">VIX 10-day change</td>
+          <td style="padding:5px 0;font-weight:600;color:{{ macro.vix_10d_color }};">{{ macro.vix_10d_change }}</td>
+        </tr>
+        <tr>
+          <td style="padding:5px 0;color:#666;">Regime</td>
+          <td style="padding:5px 0;font-weight:700;color:{{ macro.regime_color }};">{{ macro.regime }} — {{ macro.regime_note }}</td>
+        </tr>
+        <tr>
+          <td style="padding:5px 0;color:#666;">Yield Curve (10Y–3M)</td>
+          <td style="padding:5px 0;font-weight:600;color:{{ macro.yield_color }};">{{ macro.yield_spread }} — {{ macro.yield_status }}</td>
+        </tr>
+        <tr>
+          <td style="padding:5px 0;color:#666;">10Y Treasury</td>
+          <td style="padding:5px 0;color:#333;">{{ macro.yield_10y }}%</td>
+        </tr>
+        <tr>
+          <td style="padding:5px 0;color:#666;">3M T-Bill</td>
+          <td style="padding:5px 0;color:#333;">{{ macro.yield_3m }}%</td>
+        </tr>
+      </table>
+
+      {% if macro.events %}
+      <div style="margin-top:10px;background:#fef9ec;border-left:3px solid #e8c43a;padding:10px 14px;border-radius:0 4px 4px 0;">
+        <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#7a6010;text-transform:uppercase;">Today's Events</p>
+        {% for ev in macro.events %}
+        <p style="margin:2px 0;font-size:12px;color:#555;">· {{ ev }}</p>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="margin:8px 0 0;font-size:12px;color:#95a5a6;">No major economic events today.</p>
+      {% endif %}
+    </td>
+  </tr>
+
+  {# ── SECTION 2: OPEN POSITIONS ── #}
+  <tr>
+    <td style="padding:20px 32px 0;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #ecf0f1;padding-bottom:6px;">2 · Open Positions at Pre-Market</p>
+      {% if open_positions %}
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="background:#f0f4f8;">
+            <th style="padding:7px 8px;text-align:left;font-weight:600;color:#555;">Ticker</th>
+            <th style="padding:7px 8px;text-align:left;font-weight:600;color:#555;">Side</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#555;">Qty</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#555;">Entry</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#555;">Prev Close</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#555;">Unreal P&L</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#555;">Days</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#e07070;">▼SL</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#4caf91;">▲TP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pos in open_positions %}
+          <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:8px;font-weight:700;color:#0d1b2a;">{{ pos.ticker }}</td>
+            <td style="padding:8px;">
+              <span style="background:{% if pos.side == 'long' %}#d4f4e2{% else %}#fde0e0{% endif %};color:{% if pos.side == 'long' %}#1a7a4a{% else %}#b03030{% endif %};padding:2px 7px;border-radius:3px;font-size:11px;font-weight:700;">{{ pos.side | upper }}</span>
+            </td>
+            <td style="padding:8px;text-align:right;color:#333;">{{ pos.qty }}</td>
+            <td style="padding:8px;text-align:right;color:#333;">${{ pos.entry }}</td>
+            <td style="padding:8px;text-align:right;color:#333;">${{ pos.close_prev }}</td>
+            <td style="padding:8px;text-align:right;font-weight:600;color:{{ pos.pl_color }};">{{ pos.pl_str }}</td>
+            <td style="padding:8px;text-align:right;color:#555;">{{ pos.days_held }}d</td>
+            <td style="padding:8px;text-align:right;color:#e07070;">{{ pos.dist_sl }}</td>
+            <td style="padding:8px;text-align:right;color:#4caf91;">{{ pos.dist_tp }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p style="margin:0;font-size:13px;color:#95a5a6;font-style:italic;">No open positions.</p>
+      {% endif %}
+    </td>
+  </tr>
+
+  {# ── SECTION 3: TRADE PLAN ── #}
+  <tr>
+    <td style="padding:20px 32px 0;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #ecf0f1;padding-bottom:6px;">3 · Trading Plan at Open</p>
+      {% if trade_plan %}
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="background:#0d1b2a;">
+            <th style="padding:7px 8px;text-align:left;font-weight:600;color:#a0b4c8;">Ticker</th>
+            <th style="padding:7px 8px;text-align:left;font-weight:600;color:#a0b4c8;">Action</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#a0b4c8;">Qty</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#a0b4c8;">Notional</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#a0b4c8;">Entry</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#e07070;">SL</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#4caf91;">TP</th>
+            <th style="padding:7px 8px;text-align:right;font-weight:600;color:#a0b4c8;">Conv.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for order in trade_plan %}
+          <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:8px;font-weight:700;color:#0d1b2a;">{{ order.ticker }}</td>
+            <td style="padding:8px;">
+              <span style="background:{{ order.action_bg }};color:{{ order.action_fg }};padding:2px 7px;border-radius:3px;font-size:11px;font-weight:700;border:1px solid {{ order.action_fg }};">{{ order.action }}</span>
+            </td>
+            <td style="padding:8px;text-align:right;color:#333;">{{ order.qty }}</td>
+            <td style="padding:8px;text-align:right;color:#333;">{{ order.notional }}</td>
+            <td style="padding:8px;text-align:right;color:#333;">{{ order.entry }}</td>
+            <td style="padding:8px;text-align:right;color:#e07070;font-weight:600;">{{ order.sl }}</td>
+            <td style="padding:8px;text-align:right;color:#4caf91;font-weight:600;">{{ order.tp }}</td>
+            <td style="padding:8px;text-align:right;color:#555;">{{ order.conviction }}</td>
+          </tr>
+          {% if order.reasoning %}
+          <tr>
+            <td colspan="8" style="padding:2px 8px 8px 16px;font-size:11px;color:#777;font-style:italic;border-bottom:1px solid #f0f0f0;">
+              ↳ {{ order.reasoning }}
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p style="margin:0;font-size:13px;color:#95a5a6;font-style:italic;">No orders planned for today.</p>
+      {% endif %}
+    </td>
+  </tr>
+
+  {# ── SECTION 4: DEVIL'S ADVOCATE ── #}
+  <tr>
+    <td style="padding:20px 32px 0;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #ecf0f1;padding-bottom:6px;">4 · What Could Go Wrong</p>
+      {% if devils_advocate %}
+      <div style="background:#fdf2f2;border-left:4px solid #c0392b;padding:12px 16px;border-radius:0 4px 4px 0;">
+        <p style="margin:0;font-size:13px;color:#6b2323;line-height:1.6;">{{ devils_advocate }}</p>
+      </div>
+      {% else %}
+      <p style="margin:0;font-size:13px;color:#27ae60;font-weight:600;">No vetoes or major risk warnings from Devil's Advocate.</p>
+      {% endif %}
+    </td>
+  </tr>
+
+  {# ── SECTION 5: KPIs ── #}
+  <tr>
+    <td style="padding:20px 32px 0;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #ecf0f1;padding-bottom:6px;">5 · Week KPIs</p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+        <tr>
+          <td style="padding:6px 0;color:#666;width:50%;">P&L this week</td>
+          <td style="padding:6px 0;font-weight:700;color:{{ kpis.week_pl_color }};">{{ kpis.week_pl_str }}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:#666;">Sharpe (rolling 20d)</td>
+          <td style="padding:6px 0;font-weight:600;color:#333;">{{ kpis.sharpe }}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:#666;">Max drawdown (week)</td>
+          <td style="padding:6px 0;font-weight:600;color:#e07070;">{{ kpis.max_dd }}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:#666;">Win rate (last 20 trades)</td>
+          <td style="padding:6px 0;font-weight:600;color:#333;">{{ kpis.win_rate }}</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  {# ── FOOTER ── #}
+  <tr>
+    <td style="background:#0d1b2a;padding:16px 32px;margin-top:24px;">
+      <p style="margin:0;color:#a0b4c8;font-size:11px;line-height:1.6;">
+        Athanor Alpha · Pre-Market Briefing · {{ date }}<br>
+        AI-generated summary. Not financial advice. No positions are executed automatically.
+      </p>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
