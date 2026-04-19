@@ -25,7 +25,8 @@
       "Bash(.venv/Scripts/python -c ':*)",
       "Bash(.venv/Scripts/python -c \"from src.utils.analysts import ANALYST_CONFIG; print\\('analysts OK, keys:', sorted\\(ANALYST_CONFIG.keys\\(\\)\\)\\)\")",
       "Bash(.venv/Scripts/python -c \"import requests, re; print\\('requests OK'\\)\")",
-      "Bash(python -c ':*)"
+      "Bash(python -c ':*)",
+      "Bash(python *)"
     ]
   }
 }

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_trade_orders.py -v)"
+    ]
+  }
+}

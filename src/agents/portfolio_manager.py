@@ -20,6 +20,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from src.execution.orders import TradeOrder, order_to_dict
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.llm import call_llm
 from src.utils.progress import progress
@@ -925,6 +926,93 @@ Use exactly the action and sizing_pct values provided above – do not change th
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TradeOrder builder
+# ══════════════════════════════════════════════════════════════════════════════
+
+_REGIME_NORM: dict[str, str] = {
+    "RISK_ON":  "RISK_ON",
+    "CAUTION":  "CAUTION",
+    "RISK_OFF": "RISK_OFF",
+}
+
+_ACTION_MAP: dict[str, str] = {
+    "BUY":  "OPEN_LONG",
+    "SELL": "OPEN_SHORT",
+    "HOLD": "HOLD",
+}
+
+
+def _build_trade_orders(
+    pre_recs: list[dict],
+    macro_regime: str,
+    run_id: str,
+    state: AgentState,
+) -> list[TradeOrder]:
+    """
+    Convert pre_recs (internal dicts) to structured TradeOrder objects.
+    Existing sizing logic (Kelly/vol) and SL/TP levels are preserved as-is;
+    this function only maps them into the typed contract.
+    """
+    regime: str = _REGIME_NORM.get(macro_regime, "CAUTION")
+    ts = datetime.now(timezone.utc)
+    orders: list[TradeOrder] = []
+
+    for rec in pre_recs:
+        ticker     = rec["ticker"]
+        action_raw = rec.get("action", "HOLD")
+        action     = _ACTION_MAP.get(action_raw, "HOLD")
+
+        entry_price  = rec.get("entry_price")
+        size_usd     = rec.get("size_usd")
+
+        # quantity from dollar amount and entry price (mirrors _enrich_with_trade_levels logic)
+        quantity: int | None = None
+        notional: float | None = None
+        if action != "HOLD":
+            notional = float(size_usd) if size_usd is not None else None
+            if entry_price and notional and entry_price > 0:
+                quantity = floor(notional / entry_price) or None
+
+        # per-agent signed scores for attribution
+        signals = _collect_signals_for_ticker(state, ticker)
+        agent_contributions: dict[str, float] = {}
+        for sig in signals:
+            aid  = sig["agent_id"]
+            dirn = sig.get("direction", "NEUTRAL")
+            conf = float(sig.get("confidence", 0.0))
+            if dirn == "LONG":
+                agent_contributions[aid] = round(+conf, 4)
+            elif dirn == "SHORT":
+                agent_contributions[aid] = round(-conf, 4)
+            else:
+                agent_contributions[aid] = 0.0
+
+        reasoning = (rec.get("reasoning") or "")[:500]
+
+        order = TradeOrder(
+            ticker=ticker,
+            action=action,
+            quantity=quantity,
+            notional_usd=notional,
+            order_type="MARKET",
+            limit_price=None,
+            stop_loss=rec.get("stop_loss") if action != "HOLD" else None,
+            take_profit=rec.get("take_profit") if action != "HOLD" else None,
+            time_in_force="DAY",
+            conviction=float(rec.get("conviction", 0.0)),
+            weighted_conviction=float(rec.get("weighted_conviction", 0.0)),
+            regime_at_decision=regime,
+            reasoning=reasoning,
+            agent_contributions=agent_contributions,
+            created_at=ts,
+            run_id=run_id,
+        )
+        orders.append(order)
+
+    return orders
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Run log persistence
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -938,6 +1026,7 @@ def _write_run_log(
     portfolio_summary: str,
     risk_notes: str,
     macro_regime: str,
+    trade_orders: list[TradeOrder] | None = None,
 ) -> None:
     """
     Append one JSON line to logs/runs.jsonl for ex-post analysis.
@@ -978,15 +1067,32 @@ def _write_run_log(
             for r in pre_recs
         ]
 
+        orders_log = [order_to_dict(o) for o in (trade_orders or [])]
+
+        _LEGACY_FIELDS = (
+            "ticker", "action", "sizing_pct", "conviction", "consensus_ratio",
+            "weighted_conviction", "reasoning", "consensus",
+            "entry_price", "stop_loss", "take_profit", "size_usd", "rr_ratio",
+            "devil_vetoed",
+            "info_entry", "info_sl", "info_tp", "info_size_usd",
+            "info_rr_ratio", "info_direction",
+        )
+        portfolio_recommendations_log = [
+            {k: r.get(k) for k in _LEGACY_FIELDS}
+            for r in pre_recs
+        ]
+
         entry = {
-            "run_id":            run_id,
-            "timestamp":         ts,
-            "tickers":           tickers,
-            "macro_regime":      macro_regime,
-            "per_ticker":        per_ticker,
-            "recommendations":   recs_log,
-            "portfolio_summary": portfolio_summary,
-            "risk_notes":        risk_notes,
+            "run_id":                    run_id,
+            "timestamp":                 ts,
+            "tickers":                   tickers,
+            "macro_regime":              macro_regime,
+            "per_ticker":                per_ticker,
+            "recommendations":           recs_log,
+            "portfolio_recommendations": portfolio_recommendations_log,
+            "trade_orders":              orders_log,
+            "portfolio_summary":         portfolio_summary,
+            "risk_notes":                risk_notes,
         }
 
         _RUNS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1177,6 +1283,13 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     except Exception as _e:
         logger.warning("[portfolio_manager] Failed to save portfolio_decisions: %s", _e)
 
+    # 5b. Build structured TradeOrders (Fase 4 – Alpaca prerequisite)
+    _run_id = data.get("run_id") or state.get("metadata", {}).get("run_id", "unknown")
+    trade_orders = _build_trade_orders(pre_recs, macro_regime_detected, _run_id, state)
+    data["trade_orders"] = trade_orders
+
+    progress.update_status(AGENT_ID, None, f"Built {len(trade_orders)} TradeOrders")
+
     # 6. Persist run log
     _write_run_log(
         state=state,
@@ -1185,6 +1298,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
         portfolio_summary=portfolio_summary,
         risk_notes=risk_notes,
         macro_regime=macro_regime_detected,
+        trade_orders=trade_orders,
     )
 
     # 7. Build output
