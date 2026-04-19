@@ -136,7 +136,7 @@ def _load_agent_model_map() -> dict:
         log.warning(f"agent_router non disponibile, uso fallback globale: {e}")
         return {}
 
-def _build_initial_state(tickers: list, run_id: str, mode: str) -> dict:
+def _build_initial_state(tickers: list, run_id: str, mode: str, live: bool = False) -> dict:
     end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     mode_cfg = MODE_CONFIG[mode]
 
@@ -169,6 +169,8 @@ def _build_initial_state(tickers: list, run_id: str, mode: str) -> dict:
             "skip_prediction_log":  mode_cfg["skip_prediction_log"],
             # --- FASE 5: time-based exit ---
             "skip_time_exit":       mode_cfg["skip_time_exit"],
+            # --- FASE 2: Alpaca execution (default OFF — requires --live) ---
+            "skip_execution":       not live,
         },
     }
 
@@ -427,7 +429,7 @@ def _build_digest(final_state, tickers, run_id, mode):
 # ---------------------------------------------------------------------------
 # Pipeline principale
 # ---------------------------------------------------------------------------
-def run_pipeline(tickers, send_email=True, mode="full"):
+def run_pipeline(tickers, send_email=True, mode="full", live=False):
     run_id = str(uuid.uuid4())
     mode_label = MODE_CONFIG[mode]["description"]
     log.info("=" * 60)
@@ -435,6 +437,7 @@ def run_pipeline(tickers, send_email=True, mode="full"):
     log.info(f"Modalità: {mode.upper()} — {mode_label}")
     log.info(f"Ticker : {tickers}")
     log.info(f"Email  : {'SI' if send_email else 'NO'}")
+    log.info(f"Live   : {'YES — orders will be submitted to Alpaca' if live else 'NO (paper run)'}")
     log.info("=" * 60)
 
     conn = _get_conn()
@@ -447,8 +450,8 @@ def run_pipeline(tickers, send_email=True, mode="full"):
         log.info("[1/4] OK.")
 
         log.info("[2/4] Costruzione AgentState...")
-        initial_state = _build_initial_state(tickers, run_id, mode)
-        log.info(f"[2/4] end_date={initial_state['data']['end_date']}  mode={mode}")
+        initial_state = _build_initial_state(tickers, run_id, mode, live=live)
+        log.info(f"[2/4] end_date={initial_state['data']['end_date']}  mode={mode}  live={live}")
 
         log.info("[3/4] Esecuzione grafo (2-5 minuti, attendere)...")
         log.info(f"      Nodi analyst attivi: {MODE_CONFIG[mode]['analyst_nodes'] or '(nessuno — solo review)'}")
@@ -515,6 +518,12 @@ def main():
     parser.add_argument("tickers", nargs="*", help="Ticker opzionali (default: da config/tickers.yaml)")
     parser.add_argument("--no-email", action="store_true", help="Disabilita invio email")
     parser.add_argument(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Submit orders to Alpaca paper trading (default: OFF — signals only)",
+    )
+    parser.add_argument(
         "--mode",
         choices=VALID_MODES,
         default="full",
@@ -527,7 +536,7 @@ def main():
         log.error("Nessun ticker trovato.")
         sys.exit(1)
 
-    success = run_pipeline(tickers, send_email=not args.no_email, mode=args.mode)
+    success = run_pipeline(tickers, send_email=not args.no_email, mode=args.mode, live=args.live)
     sys.exit(0 if success else 1)
 
 

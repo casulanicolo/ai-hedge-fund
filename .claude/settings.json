@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_trade_orders.py -v)"
+      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_trade_orders.py -v)",
+      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_alpaca_adapter.py tests/test_trade_orders.py -v)",
+      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m src.db.init_db)",
+      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_alpaca_adapter.py -q)"
     ]
   }
 }

@@ -360,6 +360,83 @@ def get_distinct_decision_runs(
 
 
 # ─────────────────────────────────────────────
+# CRUD — Executed Orders  (Fase 2 – Alpaca)
+# ─────────────────────────────────────────────
+
+def insert_executed_order(
+    conn: sqlite3.Connection,
+    run_id: str,
+    order,          # TradeOrder — typed loosely to avoid circular import
+    result,         # OrderSubmitResult
+    submitted_at: str,
+) -> int:
+    """
+    Insert one row into executed_orders.
+    broker_order_id UNIQUE — duplicate submissions (idempotency) silently ignored.
+    Returns the new rowid (or 0 on conflict).
+    """
+    try:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO executed_orders (
+                run_id, broker_order_id, ticker, action,
+                quantity, notional_usd, fill_price,
+                stop_loss, take_profit, status,
+                submitted_at, filled_at,
+                rejection_reason, raw_alpaca_response
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                result.broker_order_id,
+                order.ticker,
+                order.action,
+                order.quantity,
+                order.notional_usd,
+                None,   # fill_price unknown at submission
+                order.stop_loss,
+                order.take_profit,
+                result.status,
+                submitted_at,
+                None,   # filled_at: populated later by order-status poller
+                result.rejection_reason,
+                json.dumps(result.raw_response, default=str),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+    except Exception as exc:
+        logger.warning("[init_db] insert_executed_order failed: %s", exc)
+        return 0
+
+
+def get_executed_orders(
+    conn: sqlite3.Connection,
+    run_id: Optional[str] = None,
+    ticker: Optional[str] = None,
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    """Fetch executed orders filtered by run_id and/or ticker, newest first."""
+    clauses: list[str] = []
+    params: list = []
+
+    if run_id:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    if ticker:
+        clauses.append("ticker = ?")
+        params.append(ticker)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+
+    return conn.execute(
+        f"SELECT * FROM executed_orders {where} ORDER BY submitted_at DESC LIMIT ?",
+        params,
+    ).fetchall()
+
+
+# ─────────────────────────────────────────────
 # CLI entrypoint
 # ─────────────────────────────────────────────
 

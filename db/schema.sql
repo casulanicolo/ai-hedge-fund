@@ -151,3 +151,30 @@ CREATE TABLE IF NOT EXISTS portfolio_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_portfolio_decisions_run    ON portfolio_decisions(run_id);
 CREATE INDEX IF NOT EXISTS idx_portfolio_decisions_ticker ON portfolio_decisions(ticker, timestamp);
+
+-- ─────────────────────────────────────────────
+-- 8. EXECUTED ORDERS  (Fase 2 – Alpaca)
+-- One row per order submitted to the broker.
+-- broker_order_id is UNIQUE — idempotent on re-insert.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS executed_orders (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id               TEXT    NOT NULL,
+    broker_order_id      TEXT    UNIQUE,           -- NULL if rejected before submission
+    ticker               TEXT    NOT NULL,
+    action               TEXT    NOT NULL,          -- OPEN_LONG | OPEN_SHORT | CLOSE | ...
+    quantity             INTEGER,
+    notional_usd         REAL,
+    fill_price           REAL,                      -- NULL at submission; updated on fill
+    stop_loss            REAL,
+    take_profit          REAL,
+    status               TEXT,                      -- SUBMITTED | FILLED | PARTIAL_FILLED | REJECTED | CANCELED | SKIPPED
+    submitted_at         TEXT,                      -- ISO-8601 UTC
+    filled_at            TEXT,                      -- ISO-8601 UTC or NULL
+    rejection_reason     TEXT,
+    raw_alpaca_response  TEXT,                      -- JSON serialized Order object
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_executed_orders_run            ON executed_orders(run_id);
+CREATE INDEX IF NOT EXISTS idx_executed_orders_ticker_status  ON executed_orders(ticker, status);

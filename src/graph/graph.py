@@ -33,6 +33,9 @@ Topology (grafo statico, comportamento condizionale via skip wrapper)
                          portfolio_manager_node
                                  │
                                  ▼
+                           execution_node      ← saltato se skip_execution=True (default)
+                                 │
+                                 ▼
                            prediction_log_node ← saltato se skip_prediction_log=True
                                  │
                                  ▼
@@ -197,6 +200,16 @@ PORTFOLIO_MANAGER_NODE = (
     _import_or_stub("src.agents.portfolio_manager", "portfolio_manager_agent", "portfolio_manager"),
 )
 
+# Fase 2: Execution node — saltato se skip_execution=True (default True; attivo solo con --live)
+EXECUTION_NODE = (
+    "execution",
+    _make_conditional_node(
+        "execution",
+        _import_or_stub("src.graph.execution_node", "execution_node", "execution"),
+        skip_key="skip_execution",
+    ),
+)
+
 # Prediction Log — saltato se skip_prediction_log=True in metadata
 PREDICTION_LOG_NODE = (
     "prediction_log",
@@ -251,6 +264,9 @@ def build_graph() -> StateGraph:
     pm_name, pm_fn = PORTFOLIO_MANAGER_NODE
     graph.add_node(pm_name, pm_fn)
 
+    exec_name, exec_fn = EXECUTION_NODE
+    graph.add_node(exec_name, exec_fn)
+
     log_name, log_fn = PREDICTION_LOG_NODE
     graph.add_node(log_name, log_fn)
 
@@ -270,10 +286,11 @@ def build_graph() -> StateGraph:
     for analyst_name in analyst_names:
         graph.add_edge(analyst_name, da_name)
 
-    # devils_advocate → risk_manager → portfolio_manager → prediction_log → time_exit → END
+    # devils_advocate → risk_manager → portfolio_manager → execution → prediction_log → time_exit → END
     graph.add_edge(da_name, risk_name)
     graph.add_edge(risk_name, pm_name)
-    graph.add_edge(pm_name, log_name)
+    graph.add_edge(pm_name, exec_name)
+    graph.add_edge(exec_name, log_name)
     graph.add_edge(log_name, te_name)
     graph.add_edge(te_name, END)
 

@@ -136,7 +136,8 @@ def make_initial_state(
             "risk_output":            {},
             "portfolio_output":       [],
             "devils_advocate_output": {},   # Fase 3 – Devil's Advocate
-            "trade_orders":           [],   # Fase 4 – list[TradeOrder] (Alpaca-ready)
+            "trade_orders":           [],   # Fase 1 – list[TradeOrder] (Alpaca-ready)
+            "execution_report":       {},   # Fase 2 – ExecutionReport from execution_node
             # Convenience keys read directly by legacy philosophy agents
             "tickers":    tickers,
             "end_date":   end_date or date.today().isoformat(),

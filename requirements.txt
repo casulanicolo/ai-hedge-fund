@@ -18,3 +18,5 @@ colorama
 questionary
 matplotlib
 pytest
+alpaca-py>=0.30.0
+tenacity>=8.0.0
