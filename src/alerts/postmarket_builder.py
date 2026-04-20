@@ -364,7 +364,9 @@ def _main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     parser = argparse.ArgumentParser(description="Build post-market EOD email")
-    parser.add_argument("--preview", action="store_true", help="Print HTML to stdout")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--preview", action="store_true", help="Print HTML to stdout")
+    mode.add_argument("--send",    action="store_true", help="Send the EOD digest via SMTP (real email)")
     parser.add_argument("--out", default="", help="Write HTML to file")
     args = parser.parse_args()
 
@@ -375,9 +377,25 @@ def _main() -> None:
     if args.out:
         pathlib.Path(args.out).write_text(html, encoding="utf-8")
         print(f"HTML written to {args.out}")
-    elif args.preview:
+
+    if args.send:
+        from src.alerts.email_sender import send_postmarket
+        summary = ctx.get("summary", {}) or {}
+        summary_line = ""
+        pl = summary.get("pl_str")
+        alpha = summary.get("alpha_str")
+        if pl or alpha:
+            summary_line = " | ".join(p for p in (pl, f"vs SPY {alpha}" if alpha else None) if p)
+        ok = send_postmarket(html, text, date=ctx.get("date", ""), summary_line=summary_line)
+        if ok:
+            print(f"Post-market email sent ({ctx.get('date', '')}).")
+            sys.exit(0)
+        print("Post-market email send FAILED — see logs.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.preview:
         sys.stdout.write(html)
-    else:
+    elif not args.out:
         print(text)
 
 

@@ -12,7 +12,10 @@
       "Bash(.venv/Scripts/python.exe -m src.backtesting.cli --start 2024-01-02 --end 2024-01-31 --tickers AAPL,MSFT --capital 100000 --label jan2024_smoke)",
       "Bash(tee logs/backtest_jan2024_smoke.log)",
       "Bash(git commit -m ' *)",
-      "Bash(.venv/Scripts/python.exe -c \"from src.utils.llm import call_llm; print\\('import ok'\\)\")"
+      "Bash(.venv/Scripts/python.exe -c \"from src.utils.llm import call_llm; print\\('import ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('src/alerts/premarket_builder.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('src/alerts/postmarket_builder.py',encoding='utf-8'\\).read\\(\\)\\); print\\('parse ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -m src.alerts.premarket_builder --help)",
+      "Bash(.venv/Scripts/python.exe -m src.alerts.postmarket_builder --help)"
     ]
   }
 }
