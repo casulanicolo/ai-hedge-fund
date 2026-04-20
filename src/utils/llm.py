@@ -46,6 +46,25 @@ def call_llm(
             return cached_result
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # FASE 5 — Backtest guard
+    # In backtest mode (metadata.backtest=True) NO agent is allowed to
+    # call a paid LLM API. Deterministic local data + signal cache only.
+    # Cache miss → return a safe default response instead of burning
+    # Anthropic/OpenAI credit on historical days.
+    # ------------------------------------------------------------------
+    if state and state.get("metadata", {}).get("backtest"):
+        if agent_name:
+            progress.update_status(agent_name, None, "Backtest mode — LLM skipped")
+        logger.info(
+            "[llm] BACKTEST MODE — %s: LLM call blocked, returning deterministic default",
+            agent_name or "?",
+        )
+        if default_factory:
+            return default_factory()
+        return create_default_response(pydantic_model)
+    # ------------------------------------------------------------------
+
     # Extract model configuration if state is provided and agent_name is available
     if state and agent_name:
         model_name, model_provider = get_agent_model_config(state, agent_name)
