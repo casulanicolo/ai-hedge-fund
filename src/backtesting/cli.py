@@ -1,172 +1,175 @@
+"""
+src/backtesting/cli.py
+──────────────────────
+Forward-only backtest CLI.
+
+Usage
+-----
+  python -m src.backtesting.cli --start 2024-01-02 --end 2024-01-31 \\
+                                --tickers AAPL,MSFT --capital 100000
+
+  python -m src.backtesting.cli --start 2023-01-01 --end 2025-12-31 \\
+                                --tickers all --capital 100000
+
+  python -m src.backtesting.cli --walk-forward \\
+                                --is-start 2019-01-02 --is-end 2022-12-30 \\
+                                --oos-start 2023-01-02 --oos-end 2025-12-31
+
+`--tickers all` reads config/tickers.yaml.
+"""
+
 from __future__ import annotations
 
+import argparse
+import json
+import logging
 import sys
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
-import argparse
+from pathlib import Path
 
-from colorama import Fore, Style, init
-import questionary
+import yaml
 
-from .engine import BacktestEngine
-from src.llm.models import LLM_ORDER, OLLAMA_LLM_ORDER, get_model_info, ModelProvider
-from src.utils.analysts import ANALYST_ORDER
-from src.main import run_hedge_fund
-from src.utils.ollama import ensure_ollama_and_model
+from src.backtesting.forward_engine import ForwardBacktestEngine
+
+logger = logging.getLogger(__name__)
 
 
+ROOT = Path(__file__).resolve().parents[2]
+TICKERS_CONFIG = ROOT / "config" / "tickers.yaml"
+
+
+def _load_all_tickers() -> list[str]:
+    with TICKERS_CONFIG.open(encoding="utf-8-sig") as f:
+        cfg = yaml.safe_load(f)
+    if isinstance(cfg, list):
+        return cfg
+    if isinstance(cfg, dict):
+        return cfg.get("tickers", [])
+    raise ValueError(f"unrecognised tickers.yaml shape: {type(cfg)}")
+
+
+def _parse_tickers(arg: str) -> list[str]:
+    if arg.lower() == "all":
+        return _load_all_tickers()
+    return [t.strip().upper() for t in arg.split(",") if t.strip()]
+
+
+def _print_report(report: dict) -> None:
+    base = report["metrics_base"]
+    ext  = report["metrics_extended"]
+    print()
+    print("=" * 60)
+    print("FORWARD BACKTEST RESULTS")
+    print("=" * 60)
+    print(f"Trading days     : {report['n_trading_days']}")
+    print(f"Initial capital  : ${report['initial_capital']:,.2f}")
+    print(f"Final equity     : ${report['final_value']:,.2f}")
+    print(f"Total return     : {report['total_return_pct']:+.2f}%")
+    print(f"Closed trades    : {report['n_closed_trades']}")
+    print(f"Open positions   : {report['n_open_positions']}")
+    print("-" * 60)
+    print("Risk-adjusted")
+    print(f"  Sharpe         : {_fmt(base.get('sharpe_ratio'))}")
+    print(f"  Sortino        : {_fmt(base.get('sortino_ratio'))}")
+    print(f"  Calmar         : {_fmt(ext.get('calmar_ratio'))}")
+    print(f"  Omega          : {_fmt(ext.get('omega_ratio'))}")
+    print(f"  Tail ratio     : {_fmt(ext.get('tail_ratio'))}")
+    print("Path-shape")
+    print(f"  Max drawdown   : {_fmt(base.get('max_drawdown'), pct=True)}")
+    print(f"  Ulcer index    : {_fmt(ext.get('ulcer_index'))}")
+    print(f"  Time u/water   : {ext.get('time_under_water_days')} days")
+    print(f"  Win streak     : {ext.get('longest_win_streak')}")
+    print(f"  Loss streak    : {ext.get('longest_loss_streak')}")
+    print(f"  % positive days: {ext.get('pct_positive_days'):.1f}%")
+    print("Trade-level")
+    print(f"  Profit factor  : {_fmt(ext.get('profit_factor'))}")
+    print(f"  R-multiple avg : {_fmt(ext.get('r_multiple_avg'))}")
+    print("=" * 60)
+
+
+def _fmt(v, pct: bool = False) -> str:
+    if v is None:
+        return "N/A"
+    if pct:
+        return f"{v:+.2f}%"
+    return f"{v:+.3f}"
+
+
+def _save_report(report: dict, label: str) -> Path:
+    out_dir = ROOT / "results"
+    out_dir.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = out_dir / f"forward_{label}_{ts}.json"
+    safe = {
+        k: v for k, v in report.items()
+        if k not in ("equity_curve",)   # potentially huge → write separately
+    }
+    safe["equity_curve_count"] = len(report.get("equity_curve", []))
+    path.write_text(json.dumps(safe, default=str, indent=2), encoding="utf-8")
+
+    eq_path = out_dir / f"forward_{label}_{ts}_equity.csv"
+    rows = ["Date,PortfolioValue"]
+    for p in report.get("equity_curve", []):
+        rows.append(f"{p['Date'].date() if hasattr(p['Date'], 'date') else p['Date']},{p['Portfolio Value']:.2f}")
+    eq_path.write_text("\n".join(rows), encoding="utf-8")
+
+    print(f"Saved: {path.name} + {eq_path.name}")
+    return path
+
+
+# ── main ──────────────────────────────────────────────────────────────────
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run backtesting engine (modular)")
-    parser.add_argument("--tickers", type=str, required=False, help="Comma-separated tickers")
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        default=datetime.now().strftime("%Y-%m-%d"),
-        help="End date YYYY-MM-DD",
-    )
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        default=(datetime.now() - relativedelta(months=1)).strftime("%Y-%m-%d"),
-        help="Start date YYYY-MM-DD",
-    )
-    parser.add_argument("--initial-capital", type=float, default=100000)
-    parser.add_argument("--margin-requirement", type=float, default=0.0)
-    parser.add_argument("--analysts", type=str, required=False)
-    parser.add_argument("--analysts-all", action="store_true")
-    parser.add_argument("--ollama", action="store_true")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
+    p = argparse.ArgumentParser(description="Athanor Alpha — Forward-only backtest")
+    p.add_argument("--start", type=str, help="YYYY-MM-DD start date")
+    p.add_argument("--end",   type=str, help="YYYY-MM-DD end date")
+    p.add_argument("--tickers", type=str, default="all",
+                   help="Comma-separated tickers, or 'all' for config/tickers.yaml")
+    p.add_argument("--capital", type=float, default=100_000.0)
+    p.add_argument("--no-cache", action="store_true", help="Disable state cache")
+    p.add_argument("--label", type=str, default="run", help="Label for results filenames")
+    p.add_argument("--walk-forward", action="store_true",
+                   help="Run IS + OOS comparison (uses --is-start/--is-end/--oos-start/--oos-end)")
+    p.add_argument("--is-start",  type=str, default="2019-01-02")
+    p.add_argument("--is-end",    type=str, default="2022-12-30")
+    p.add_argument("--oos-start", type=str, default="2023-01-02")
+    p.add_argument("--oos-end",   type=str, default=datetime.now().strftime("%Y-%m-%d"))
+    args = p.parse_args()
 
-    args = parser.parse_args()
-    init(autoreset=True)
+    tickers = _parse_tickers(args.tickers)
+    if not tickers:
+        print("No tickers resolved.", file=sys.stderr)
+        return 1
 
-    tickers = [t.strip() for t in args.tickers.split(",")] if args.tickers else []
-
-    # Analysts selection is simplified; no interactive prompts here
-    if args.analysts_all:
-        selected_analysts = [a[1] for a in ANALYST_ORDER]
-    elif args.analysts:
-        selected_analysts = [a.strip() for a in args.analysts.split(",") if a.strip()]
-    else:
-        # Interactive analyst selection (same as legacy backtester)
-        choices = questionary.checkbox(
-            "Use the Space bar to select/unselect analysts.",
-            choices=[questionary.Choice(display, value=value) for display, value in ANALYST_ORDER],
-            instruction="\n\nPress 'a' to toggle all.\n\nPress Enter when done to run the hedge fund.",
-            validate=lambda x: len(x) > 0 or "You must select at least one analyst.",
-            style=questionary.Style(
-                [
-                    ("checkbox-selected", "fg:green"),
-                    ("selected", "fg:green noinherit"),
-                    ("highlighted", "noinherit"),
-                    ("pointer", "noinherit"),
-                ]
-            ),
-        ).ask()
-        if not choices:
-            print("\n\nInterrupt received. Exiting...")
-            return 1
-        selected_analysts = choices
-        print(
-            f"\nSelected analysts: "
-            f"{', '.join(Fore.GREEN + choice.title().replace('_', ' ') + Style.RESET_ALL for choice in choices)}\n"
+    if args.walk_forward:
+        from src.backtesting.walk_forward import run_walk_forward
+        result = run_walk_forward(
+            tickers=tickers, capital=args.capital,
+            is_start=args.is_start, is_end=args.is_end,
+            oos_start=args.oos_start, oos_end=args.oos_end,
+            use_cache=not args.no_cache,
         )
+        _print_report(result["is"]);  print("\n>>> ABOVE: IN-SAMPLE\n")
+        _print_report(result["oos"]); print("\n>>> ABOVE: OUT-OF-SAMPLE\n")
+        print(f"Sharpe decay (IS-OOS) : {_fmt(result.get('sharpe_decay'))}")
+        print(f"Return retention      : {_fmt(result.get('return_retention'))}")
+        _save_report(result["is"],  f"{args.label}_IS")
+        _save_report(result["oos"], f"{args.label}_OOS")
+        return 0
 
-    # Model selection simplified: default to first ordered model or Ollama flag
-    if args.ollama:
-        print(f"{Fore.CYAN}Using Ollama for local LLM inference.{Style.RESET_ALL}")
-        model_name = questionary.select(
-            "Select your Ollama model:",
-            choices=[questionary.Choice(display, value=value) for display, value, _ in OLLAMA_LLM_ORDER],
-            style=questionary.Style(
-                [
-                    ("selected", "fg:green bold"),
-                    ("pointer", "fg:green bold"),
-                    ("highlighted", "fg:green"),
-                    ("answer", "fg:green bold"),
-                ]
-            ),
-        ).ask()
-        if not model_name:
-            print("\n\nInterrupt received. Exiting...")
-            return 1
-        if model_name == "-":
-            model_name = questionary.text("Enter the custom model name:").ask()
-            if not model_name:
-                print("\n\nInterrupt received. Exiting...")
-                return 1
-        if not ensure_ollama_and_model(model_name):
-            print(f"{Fore.RED}Cannot proceed without Ollama and the selected model.{Style.RESET_ALL}")
-            return 1
-        model_provider = ModelProvider.OLLAMA.value
-        print(
-            f"\nSelected {Fore.CYAN}Ollama{Style.RESET_ALL} model: {Fore.GREEN + Style.BRIGHT}{model_name}{Style.RESET_ALL}\n"
-        )
-    else:
-        model_choice = questionary.select(
-            "Select your LLM model:",
-            choices=[questionary.Choice(display, value=(name, provider)) for display, name, provider in LLM_ORDER],
-            style=questionary.Style(
-                [
-                    ("selected", "fg:green bold"),
-                    ("pointer", "fg:green bold"),
-                    ("highlighted", "fg:green"),
-                    ("answer", "fg:green bold"),
-                ]
-            ),
-        ).ask()
-        if not model_choice:
-            print("\n\nInterrupt received. Exiting...")
-            return 1
-        model_name, model_provider = model_choice
-        model_info = get_model_info(model_name, model_provider)
-        if model_info and model_info.is_custom():
-            model_name = questionary.text("Enter the custom model name:").ask()
-            if not model_name:
-                print("\n\nInterrupt received. Exiting...")
-                return 1
-        print(
-            f"\nSelected {Fore.CYAN}{model_provider}{Style.RESET_ALL} model: {Fore.GREEN + Style.BRIGHT}{model_name}{Style.RESET_ALL}\n"
-        )
+    if not args.start or not args.end:
+        print("--start and --end required (unless --walk-forward).", file=sys.stderr)
+        return 1
 
-    engine = BacktestEngine(
-        agent=run_hedge_fund,
-        tickers=tickers,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        initial_capital=args.initial_capital,
-        model_name=model_name,
-        model_provider=model_provider,
-        selected_analysts=selected_analysts,
-        initial_margin_requirement=args.margin_requirement,
+    engine = ForwardBacktestEngine(
+        tickers=tickers, start=args.start, end=args.end,
+        initial_capital=args.capital, use_cache=not args.no_cache,
     )
-
-    metrics = engine.run_backtest()
-    values = engine.get_portfolio_values()
-
-    # Minimal terminal output (no plots)
-    if values:
-        print(f"\n{Fore.WHITE}{Style.BRIGHT}ENGINE RUN COMPLETE{Style.RESET_ALL}")
-        last_value = values[-1]["Portfolio Value"]
-        start_value = values[0]["Portfolio Value"]
-        total_return = (last_value / start_value - 1.0) * 100.0 if start_value else 0.0
-        print(f"Total Return: {Fore.GREEN if total_return >= 0 else Fore.RED}{total_return:.2f}%{Style.RESET_ALL}")
-    if metrics.get("sharpe_ratio") is not None:
-        print(f"Sharpe: {metrics['sharpe_ratio']:.2f}")
-    if metrics.get("sortino_ratio") is not None:
-        print(f"Sortino: {metrics['sortino_ratio']:.2f}")
-    if metrics.get("max_drawdown") is not None:
-        md = abs(metrics["max_drawdown"]) if metrics["max_drawdown"] is not None else 0.0
-        if metrics.get("max_drawdown_date"):
-            print(f"Max DD: {md:.2f}% on {metrics['max_drawdown_date']}")
-        else:
-            print(f"Max DD: {md:.2f}%")
-
+    report = engine.run()
+    _print_report(report)
+    _save_report(report, args.label)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-

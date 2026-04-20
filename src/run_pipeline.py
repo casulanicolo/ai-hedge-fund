@@ -502,6 +502,43 @@ def run_pipeline(tickers, send_email=False, mode="full", live=False):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def _run_backtest_single_day(tickers: list, as_of: str) -> bool:
+    """
+    Single-day backtest debug helper. Reconstructs PIT state at as_of,
+    runs the graph (no execution, no emails), prints portfolio_output recommendations.
+    """
+    from datetime import date as _date
+    from src.backtesting.state_reconstructor import reconstruct_state_at
+    from src.graph.graph import compiled_graph
+
+    log.info("=" * 60)
+    log.info(f"BACKTEST single-day @ {as_of} | tickers={tickers}")
+    log.info("=" * 60)
+    try:
+        state = reconstruct_state_at(as_of, tickers)
+        state["metadata"]["skip_execution"]      = True
+        state["metadata"]["skip_prediction_log"] = True
+        state["metadata"]["skip_time_exit"]      = True
+        state["metadata"]["active_analyst_nodes"] = MODE_CONFIG["full"]["analyst_nodes"]
+        state["metadata"]["skip_devils_advocate"] = MODE_CONFIG["full"]["skip_devils_advocate"]
+        state["metadata"]["skip_risk_manager"]    = MODE_CONFIG["full"]["skip_risk_manager"]
+        final = compiled_graph.invoke(state)
+        recs = final.get("data", {}).get("portfolio_output", {})
+        if isinstance(recs, dict):
+            recs = recs.get("recommendations", [])
+        log.info(f"BACKTEST output: {len(recs)} recommendations")
+        for r in recs:
+            log.info(
+                "  %-6s %-5s sizing=%s%% conv=%.2f reasoning=%.80s",
+                r.get("ticker"), r.get("action"), r.get("sizing_pct"),
+                float(r.get("conviction") or 0.0), str(r.get("reasoning", "")),
+            )
+        return True
+    except Exception as exc:
+        log.error("Backtest single-day failed: %s", exc, exc_info=True)
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Athanor Alpha — Pipeline principale")
     parser.add_argument("tickers", nargs="*", help="Ticker opzionali (default: da config/tickers.yaml)")
@@ -523,12 +560,22 @@ def main():
         default="full",
         help="Modalità di esecuzione: full (default), light, review",
     )
+    parser.add_argument(
+        "--backtest-as-of",
+        type=str,
+        default=None,
+        help="Single-day backtest debug. Format YYYY-MM-DD. Skips execution and email.",
+    )
     args = parser.parse_args()
 
     tickers = load_tickers(args.tickers if args.tickers else None)
     if not tickers:
         log.error("Nessun ticker trovato.")
         sys.exit(1)
+
+    if args.backtest_as_of:
+        ok = _run_backtest_single_day(tickers, args.backtest_as_of)
+        sys.exit(0 if ok else 1)
 
     success = run_pipeline(tickers, send_email=args.email, mode=args.mode, live=args.live)
     sys.exit(0 if success else 1)

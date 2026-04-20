@@ -4,7 +4,13 @@
       "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_trade_orders.py -v)",
       "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_alpaca_adapter.py tests/test_trade_orders.py -v)",
       "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m src.db.init_db)",
-      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_alpaca_adapter.py -q)"
+      "Bash(c:/Users/tomma/Documents/athanor-alpha/.venv/Scripts/python.exe -m pytest tests/test_alpaca_adapter.py -q)",
+      "Bash(.venv/Scripts/python.exe -c \"import langchain_core; print\\('OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/backtesting/test_point_in_time.py -v)",
+      "Bash(.venv/Scripts/python.exe -m src.run_pipeline AAPL MSFT --backtest-as-of 2024-01-15)",
+      "Bash(.venv/Scripts/python.exe -m src.backtesting.cli --start 2024-01-02 --end 2024-01-31 --tickers AAPL,MSFT --capital 100000 --label jan2024_smoke)",
+      "Bash(tee logs/backtest_jan2024_smoke.log)"
     ]
   }
 }

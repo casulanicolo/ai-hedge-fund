@@ -1,0 +1,30 @@
+{
+  "initial_capital": 100000.0,
+  "final_value": 100000.0,
+  "total_return_pct": 0.0,
+  "n_trading_days": 21,
+  "n_closed_trades": 0,
+  "n_open_positions": 0,
+  "metrics_base": {
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": -15.874507866387539,
+    "max_drawdown": 0.0,
+    "max_drawdown_date": null
+  },
+  "metrics_extended": {
+    "calmar_ratio": null,
+    "mar_ratio": null,
+    "omega_ratio": null,
+    "tail_ratio": null,
+    "ulcer_index": 0.0,
+    "time_under_water_days": 0,
+    "longest_win_streak": 0,
+    "longest_loss_streak": 0,
+    "pct_positive_days": 0.0,
+    "profit_factor": null,
+    "r_multiple_avg": null,
+    "r_multiple_distribution": []
+  },
+  "closed_trades": [],
+  "equity_curve_count": 21
+}

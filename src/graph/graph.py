@@ -112,6 +112,9 @@ def _make_conditional_analyst(node_name: str, fn: Callable) -> Callable:
     state["metadata"]["active_analyst_nodes"].
     Se il campo non esiste (compatibilità con vecchi stati),
     il nodo viene sempre eseguito.
+
+    Backtest mode (metadata.backtest=True): sentiment node is rerouted
+    to sentiment_backtest_agent (price-action proxy, no LLM news fetch).
     """
     def _wrapped(state: AgentState) -> AgentState:
         active = state.get("metadata", {}).get("active_analyst_nodes", None)
@@ -119,6 +122,13 @@ def _make_conditional_analyst(node_name: str, fn: Callable) -> Callable:
             logger.info("SKIP analyst node %r (mode=%s)", node_name,
                         state.get("metadata", {}).get("run_mode", "full"))
             return state
+        if node_name == "sentiment" and state.get("metadata", {}).get("backtest"):
+            try:
+                from src.agents.sentiment_backtest import sentiment_backtest_agent
+                return sentiment_backtest_agent(state)
+            except Exception as exc:
+                logger.error("sentiment_backtest fallback failed: %s", exc, exc_info=True)
+                return state
         return fn(state)
     _wrapped.__name__ = node_name
     return _wrapped
