@@ -1026,6 +1026,15 @@ _ACTION_MAP: dict[str, str] = {
 }
 
 
+def _cb_opens_halted() -> bool:
+    """CB gate: return True if CB1/CB3/CB5 are active (no new OPEN orders)."""
+    try:
+        from src.risk.circuit_breakers import is_cb_active
+        return any(is_cb_active(cb) for cb in ("cb1", "cb3", "cb5"))
+    except Exception:
+        return False
+
+
 def _build_trade_orders(
     pre_recs: list[dict],
     macro_regime: str,
@@ -1041,10 +1050,19 @@ def _build_trade_orders(
     ts = datetime.now(timezone.utc)
     orders: list[TradeOrder] = []
 
+    # CB gate (Fase 8): if CB1/CB3/CB5 active → only CLOSE/HOLD allowed
+    cb_halted = _cb_opens_halted()
+    if cb_halted:
+        logger.warning("[pm] CB gate active — all OPEN orders downgraded to HOLD")
+
     for rec in pre_recs:
         ticker     = rec["ticker"]
         action_raw = rec.get("action", "HOLD")
         action     = _ACTION_MAP.get(action_raw, "HOLD")
+
+        # CB gate: convert OPEN_LONG / OPEN_SHORT → HOLD
+        if cb_halted and action in ("OPEN_LONG", "OPEN_SHORT"):
+            action = "HOLD"
 
         entry_price  = rec.get("entry_price")
         size_usd     = rec.get("size_usd")

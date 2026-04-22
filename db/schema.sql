@@ -219,3 +219,24 @@ CREATE TABLE IF NOT EXISTS ml_model_registry (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ml_registry_promoted ON ml_model_registry(promoted, trained_at);
+
+-- ─────────────────────────────────────────────
+-- 11. AUDIT TRAIL  (Fase 8)
+-- Append-only log of every state-changing event.
+-- No UPDATE or DELETE on this table — ever.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS audit_trail (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT    NOT NULL,               -- EventType constant
+    severity    TEXT    NOT NULL DEFAULT 'INFO' -- INFO | WARNING | CRITICAL
+                CHECK(severity IN ('INFO', 'WARNING', 'CRITICAL')),
+    ticker      TEXT,                           -- NULL for non-ticker events
+    agent_id    TEXT,                           -- NULL for non-agent events
+    run_id      TEXT,                           -- NULL for ad-hoc events
+    details     TEXT,                           -- JSON blob (optional)
+    timestamp   TEXT    NOT NULL                -- ISO-8601 UTC
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_ts         ON audit_trail(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_trail(event_type, timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_severity   ON audit_trail(severity, timestamp);

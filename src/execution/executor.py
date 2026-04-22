@@ -17,6 +17,15 @@ from pydantic import BaseModel
 from src.execution.broker_adapter import BrokerAdapter, OrderSubmitResult
 from src.execution.orders import TradeOrder
 
+# Fase 8 — Risk & audit (graceful fallback if not installed yet)
+try:
+    from src.risk.compliance_checks import run_all as _run_compliance, all_passed
+    from src.audit.trail import log_event as _audit_log
+    from src.audit.event_types import EventType, Severity
+    _RISK_AVAILABLE = True
+except Exception:
+    _RISK_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 DAILY_ORDER_CAP = int(__import__("os").getenv("ALPACA_DAILY_ORDER_CAP", "20"))
@@ -161,6 +170,14 @@ class TradeExecutor:
 
         report.skipped += len(holds)
 
+        # ── Fetch open positions once for compliance checks ───────────────────
+        open_positions: list = []
+        if _RISK_AVAILABLE:
+            try:
+                open_positions = self._adapter.get_positions()
+            except Exception as exc:
+                logger.warning("[executor] get_positions for compliance failed: %s", exc)
+
         # ── Execute ───────────────────────────────────────────────────────────
         submitted_this_run = 0
         for order in active:
@@ -168,6 +185,30 @@ class TradeExecutor:
                 logger.warning("[executor] Cap reached mid-run — remaining orders skipped")
                 report.skipped += 1
                 continue
+
+            # ── Compliance pre-check (Fase 8) ─────────────────────────────────
+            if _RISK_AVAILABLE:
+                compliance_results = _run_compliance(
+                    order, open_positions, self._adapter,
+                    regime=getattr(order, "regime_at_decision", "UNKNOWN"),
+                )
+                if not all_passed(compliance_results):
+                    failed = [r for r in compliance_results if not r.passed]
+                    reasons = "; ".join(r.reason for r in failed)
+                    _audit_log(
+                        EventType.COMPLIANCE_FAIL,
+                        Severity.WARNING,
+                        ticker=order.ticker,
+                        run_id=self._run_id,
+                        details={"action": order.action, "checks": [
+                            {"id": r.check_id, "reason": r.reason} for r in failed
+                        ]},
+                    )
+                    logger.warning("[executor] Compliance FAIL %s %s — %s",
+                                   order.action, order.ticker, reasons)
+                    report.skipped += 1
+                    report.errors.append(f"Compliance: {order.action} {order.ticker}: {reasons}")
+                    continue
 
             submitted_at = datetime.now(timezone.utc).isoformat()
             result = self._adapter.submit_order(order)
@@ -187,6 +228,17 @@ class TradeExecutor:
             elif result.success:
                 report.submitted += 1
                 submitted_this_run += 1
+                if _RISK_AVAILABLE:
+                    _audit_log(
+                        EventType.ORDER_SUBMIT,
+                        Severity.INFO,
+                        ticker=order.ticker,
+                        run_id=self._run_id,
+                        details={"action": order.action,
+                                 "broker_order_id": result.broker_order_id,
+                                 "status": result.status,
+                                 "notional_usd": order.notional_usd},
+                    )
                 logger.info(
                     "[executor] ✓ %s %s — broker_id=%s status=%s",
                     order.action, order.ticker, result.broker_order_id, result.status,
@@ -195,6 +247,16 @@ class TradeExecutor:
                 report.rejected += 1
                 reason = result.rejection_reason or "unknown"
                 report.errors.append(f"{order.action} {order.ticker}: {reason}")
+                if _RISK_AVAILABLE:
+                    _audit_log(
+                        EventType.ORDER_REJECT,
+                        Severity.WARNING,
+                        ticker=order.ticker,
+                        run_id=self._run_id,
+                        details={"action": order.action,
+                                 "reason": reason,
+                                 "broker_order_id": result.broker_order_id},
+                    )
                 logger.error(
                     "[executor] ✗ %s %s — %s",
                     order.action, order.ticker, reason,

@@ -1423,6 +1423,17 @@ def disarm_kill_switch() -> bool:
         return False
 
 
+@st.cache_data(ttl=60)
+def get_circuit_breaker_status() -> list:
+    """Return list of CBStatus from a no-adapter check (flag files + DB only)."""
+    try:
+        from src.risk.circuit_breakers import check_all
+        return check_all(adapter=None)
+    except Exception as exc:
+        log.warning("get_circuit_breaker_status failed: %s", exc)
+        return []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Cross-tab utilities
 # ─────────────────────────────────────────────────────────────────────────────

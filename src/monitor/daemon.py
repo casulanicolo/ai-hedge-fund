@@ -52,7 +52,8 @@ logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handle
 log = logging.getLogger("athanor.monitor")
 
 # ── Constants ────────────────────────────────────────────────────────────────
-KILL_SWITCH_PATH  = pathlib.Path(".kill_monitor")
+KILL_SWITCH_PATH        = pathlib.Path(".kill_monitor")
+ATHANOR_KILL_PATH       = pathlib.Path(".athanor_kill")
 DEFAULT_CYCLE_SEC = 60
 MARKET_OPEN_UTC   = (14, 30)   # 14:30 UTC = 09:30 ET
 MARKET_CLOSE_UTC  = (21,  0)   # 21:00 UTC = 16:00 ET
@@ -287,11 +288,35 @@ class ActiveMonitorDaemon:
 
     def _should_kill(self) -> bool:
         if KILL_SWITCH_PATH.exists():
-            log.info("[daemon] Kill switch detected — shutting down cleanly.")
+            log.info("[daemon] .kill_monitor detected — shutting down cleanly.")
             return True
+        if ATHANOR_KILL_PATH.exists():
+            log.critical("[daemon] .athanor_kill detected — closing all positions and exiting.")
+            try:
+                from src.risk.kill_switch import close_all_and_exit
+                close_all_and_exit(self._adapter)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                log.error("[daemon] close_all_and_exit failed: %s", exc)
+                sys.exit(1)
         return False
 
     # ── Single tick ───────────────────────────────────────────────────────────
+
+    def _run_circuit_breaker_checks(self, raw_positions: list) -> None:
+        """Run CB checks each tick; handle CB2 force-closes inline."""
+        try:
+            from src.risk.circuit_breakers import check_all, force_close_cb2_positions
+            statuses = check_all(self._adapter)
+            triggered = [s for s in statuses if s.triggered]
+            for s in triggered:
+                log.warning("[daemon] %s TRIGGERED: %s", s.cb_id, s.reason)
+            cb2 = [s for s in statuses if s.cb_id == "CB2" and s.triggered]
+            if cb2:
+                force_close_cb2_positions(self._adapter, cb2)
+        except Exception as exc:
+            log.warning("[daemon] CB check error: %s", exc)
 
     def run_tick(self) -> list:
         from src.monitor.monitor_state import MonitorTick
@@ -306,6 +331,9 @@ class ActiveMonitorDaemon:
         except Exception as exc:
             log.error("[daemon] Failed to get positions/clock from Alpaca: %s", exc)
             return []
+
+        # ── Circuit breaker checks (Fase 8) ──────────────────────────────────
+        self._run_circuit_breaker_checks(raw_positions)
 
         if not raw_positions:
             log.info("[daemon] No open positions — nothing to evaluate.")

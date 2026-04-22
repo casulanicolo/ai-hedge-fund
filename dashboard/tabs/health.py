@@ -62,6 +62,49 @@ def render(ds, c) -> None:
         )
     c.audit_table(ds.get_audit_trail(limit=int(limit)))
 
+    # ── Circuit Breaker status ─────────────────────────────────────────────
+    st.markdown("&nbsp;")
+    st.markdown("**Circuit Breakers · current status**")
+
+    cb_statuses = ds.get_circuit_breaker_status()
+    if cb_statuses:
+        cb_cols = st.columns(5, gap="small")
+        cb_meta = {
+            "CB1": ("Daily P&L < -3%",    "Halts new OPEN orders"),
+            "CB2": ("Position loss > 8%",  "Force-closes that position"),
+            "CB3": ("VIX > 35",            "Halts new OPEN orders"),
+            "CB4": ("Reject rate > 50%",   "Soft alert only"),
+            "CB5": ("Equity drawdown >15%","Halts ALL new orders"),
+        }
+        for col, s in zip(cb_cols, cb_statuses):
+            with col:
+                triggered = getattr(s, "triggered", False)
+                cb_id     = getattr(s, "cb_id", "?")
+                reason    = getattr(s, "reason", "")
+                desc, remedy = cb_meta.get(cb_id, ("", ""))
+                color  = "#ff3b3b" if triggered else "#27ae60"
+                label  = "TRIGGERED" if triggered else "OK"
+                st.markdown(
+                    f"<div style='border:1px solid #333;border-radius:6px;padding:10px;"
+                    f"background:#161a22;font-family:JetBrains Mono,monospace;font-size:11px;'>"
+                    f"<b style='color:#ccc;'>{cb_id}</b><br>"
+                    f"<span style='background:{color};color:#0e1117;padding:1px 8px;"
+                    f"border-radius:3px;font-weight:700;font-size:10px;'>{label}</span><br>"
+                    f"<span style='color:#888;font-size:10px;'>{desc}</span><br>"
+                    f"<span style='color:#666;font-size:9px;'>{reason[:60]}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        any_triggered = any(getattr(s, "triggered", False) for s in cb_statuses)
+        if any_triggered:
+            st.warning(
+                "One or more circuit breakers are TRIGGERED. "
+                "CB1/CB3/CB5 → OPEN orders halted. CB2 → position auto-closed. "
+                "CB4 → review broker connectivity. Reset via: `python -c \"from src.risk.circuit_breakers import reset_cb; reset_cb('cb1')\"`"
+            )
+    else:
+        st.info("Circuit breaker data unavailable (adapter not connected).")
+
     # ── EMERGENCY KILL panel ───────────────────────────────────────────────
     st.markdown("&nbsp;")
     st.markdown("**Emergency kill switch**")

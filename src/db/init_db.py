@@ -545,6 +545,59 @@ def get_ml_model_history(
 
 
 # ─────────────────────────────────────────────
+# CRUD — Audit Trail  (Fase 8)
+# ─────────────────────────────────────────────
+
+def insert_audit_event(
+    conn: sqlite3.Connection,
+    event_type: str,
+    severity: str = "INFO",
+    ticker: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    details: Optional[str] = None,
+    timestamp: Optional[str] = None,
+) -> int:
+    """Append one row to audit_trail. Returns rowid."""
+    import json as _json
+    from datetime import datetime, timezone
+    ts = timestamp or datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        """
+        INSERT INTO audit_trail
+            (event_type, severity, ticker, agent_id, run_id, details, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (event_type, severity, ticker, agent_id, run_id, details, ts),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_audit_trail(
+    conn: sqlite3.Connection,
+    limit: int = 100,
+    event_type: Optional[str] = None,
+    severity: Optional[str] = None,
+) -> list[sqlite3.Row]:
+    """Fetch audit trail rows, newest first."""
+    clauses: list[str] = []
+    params: list = []
+    if event_type:
+        clauses.append("event_type = ?")
+        params.append(event_type)
+    if severity:
+        clauses.append("severity = ?")
+        params.append(severity)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+    return conn.execute(
+        f"SELECT * FROM audit_trail {where} ORDER BY timestamp DESC LIMIT ?",
+        params,
+    ).fetchall()
+
+
+# ─────────────────────────────────────────────
 # CLI entrypoint
 # ─────────────────────────────────────────────
 
