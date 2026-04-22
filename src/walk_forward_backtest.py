@@ -34,7 +34,6 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from colorama import Fore, Style
 
-from src.main import run_hedge_fund
 from src.backtesting.walk_forward import WalkForwardAnalyzer
 from src.cli.input import (
     parse_tickers,

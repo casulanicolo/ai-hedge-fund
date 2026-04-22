@@ -1,0 +1,28 @@
+[Unit]
+Description=Athanor Alpha — Active Position Monitor Daemon
+Documentation=file:///home/athanor/athanor-alpha/docs/RUNBOOK.md
+After=network.target
+
+[Service]
+Type=simple
+User=athanor
+Group=athanor
+WorkingDirectory=/home/athanor/athanor-alpha
+EnvironmentFile=/home/athanor/athanor-alpha/.env
+ExecStart=/home/athanor/athanor-alpha/.venv/bin/python -m src.monitor.daemon
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=athanor-monitor
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

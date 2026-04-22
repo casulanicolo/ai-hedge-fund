@@ -6,6 +6,44 @@
 
 ---
 
+## Per l'operatore
+
+> Leggi qui se devi **gestire** il sistema, non svilupparlo. Per i dettagli tecnici vai all'Indice sotto.
+
+**Cos'è**: sistema automatico che ogni giorno analizza un portafoglio di azioni con 15+ agenti AI, apre/chiude posizioni su Alpaca Paper Trading, e manda 2 email di riepilogo.
+
+**Avvio rapido**:
+```bash
+sudo systemctl start athanor-monitor athanor-dashboard athanor-schedule
+```
+
+**Stop**:
+```bash
+sudo systemctl stop athanor-monitor athanor-schedule athanor-dashboard
+```
+
+**Dashboard**: `http://tuo-vps-ip` (credenziali in nginx basic auth)
+
+**Email**: pre-market ~08:35 ET · post-market ~17:05 ET all'indirizzo in `ALERT_RECIPIENT`
+
+**Log**: `logs/pipeline_YYYY-MM-DD.log` · `journalctl -u athanor-monitor -f`
+
+**Check di 5 min ogni mattina**:
+```bash
+python -m src.run_pipeline --health-check   # JSON status compatto
+```
+
+**Emergenza — chiudi tutto**:
+```bash
+touch .athanor_kill   # arm kill switch → daemon chiude posizioni nel prossimo tick
+```
+
+**Documentazione operativa completa**: [`docs/RUNBOOK.md`](docs/RUNBOOK.md) · [`docs/OPERATOR_QUICKSTART.md`](docs/OPERATOR_QUICKSTART.md)
+
+**Deploy**: `.\scripts\deploy.ps1 -VpsHost athanor-vps` (< 5 minuti)
+
+---
+
 ## Indice
 
 1. [Panoramica](#panoramica)
@@ -1232,6 +1270,157 @@ DEFAULT_LLM_MODEL=claude-sonnet-4-6
 # Ollama (opzionale, per uso locale zero-cost)
 OLLAMA_BASE_URL=http://localhost:11434
 ```
+
+---
+
+## Dashboard operativa (Fase 6)
+
+Streamlit multi-tab su porta 8501, servita via nginx con basic auth.
+
+```bash
+streamlit run dashboard/app.py --server.port 8501 --server.headless true
+```
+
+| Tab | Contenuto |
+|-----|-----------|
+| **Portfolio** | Posizioni aperte, P&L, raccomandazioni correnti |
+| **Signals** | Segnali per agente × ticker (oggi) |
+| **Agents** | Storico pesi EWA + meta-learner, ranking performance |
+| **Backtest** | Metriche IS/OOS Sharpe/Sortino/Max-DD + equity curve |
+| **Execution** | Ordini Alpaca: fill price, status, latency |
+| **Health** | Circuit breaker CB1-CB5, kill switch, audit trail últimi eventi |
+
+Il `data_sources.py` centralizza tutte le query DB con `@st.cache_data` (TTL 60s).
+
+---
+
+## ML Meta-Learner (Fase 7)
+
+XGBoost per calibrare i pesi degli agenti per contesto (regime, VIX, settore, ticker).
+
+**Formula**: `effective_weight = EWA_weight × meta_weight` (moltiplicativo)
+
+**Guardrail**: se combo `(agent_id, regime)` < 500 campioni → `meta_weight = 1.0` (no adjustment)
+
+**Transform**: `w = 1.0 + tanh(raw_pred / p75_abs_pred)`, clampato a `[0.1, 2.0]`
+
+**Training nightly** (02:00 ET via cron):
+```bash
+python -m src.ml.train_meta_learner
+```
+
+**Promozione**: solo se `AUC_val ≥ current + 0.01 AND ≥ 0.55 AND Brier < 0.30`
+
+**Split temporale** (no data leakage): train ≤ 2024-06-30 · val 2024-07→12 · test 2025-01→oggi
+
+Moduli: `src/ml/feature_extractor.py`, `dataset_builder.py`, `meta_learner.py`, `evaluator.py`, `train_meta_learner.py`
+
+---
+
+## Risk Hardening — Circuit Breaker, Audit Trail, Compliance (Fase 8)
+
+### Circuit Breakers (CB1-CB5)
+
+| CB | Trigger | Effetto |
+|----|---------|---------|
+| CB1 | Daily portfolio loss > 3% | Halt nuovi OPEN per oggi (flag file) |
+| CB2 | Singola posizione > -8% | Force FULL_EXIT quella posizione |
+| CB3 | VIX > 35 | Halt nuovi OPEN (real-time check) |
+| CB4 | Rejection rate > 50% su 10 ordini | Soft alert (WARNING) |
+| CB5 | Equity drawdown > 15% vs ieri | Halt TUTTI i nuovi ordini (flag file) |
+
+CB1/CB5 usano flag files (`.circuit_breaker_cb1_YYYY-MM-DD`) per persistere lo stato giornaliero.  
+CB2 chiude la posizione immediatamente nel tick del daemon.
+
+```bash
+# Status CB
+python -m src.risk._cb_runner
+# Reset manuale
+python -c "from src.risk.circuit_breakers import reset_cb; reset_cb('cb1')"
+```
+
+### Kill Switch manuale
+
+Arma via dashboard (Tab 6) o CLI:
+```bash
+touch .athanor_kill          # arm — chiude tutto nel prossimo tick del daemon
+rm .athanor_kill             # disarm
+```
+
+### Compliance pre-trade (CC1-CC6)
+
+Prima di ogni submit a Alpaca, 6 check difensivi:
+
+| Check | Condizione blocco |
+|-------|------------------|
+| CC1 | Kill switch armato + OPEN |
+| CC2 | CB1/CB3/CB5 attivo + OPEN |
+| CC3 | Notional ordine > 25% equity |
+| CC4 | Posizioni aperte ≥ MAX_ACTIVE_TRADES |
+| CC5 | Ticker già > 20% del portfolio |
+| CC6 | Cash disponibile < 10% equity |
+
+### Audit Trail
+
+Ogni evento che "sposta denaro" o "cambia stato" è scritto nella tabella `audit_trail` (append-only, no UPDATE/DELETE).
+
+```python
+from src.audit.trail import log_event
+from src.audit.event_types import EventType, Severity
+
+log_event(EventType.ORDER_SUBMIT, Severity.INFO, ticker="AAPL",
+          run_id="abc123", details={"qty": 10, "notional": 500.0})
+```
+
+---
+
+## Deploy e operatività (Fase 9)
+
+### Struttura deploy
+
+```
+deploy/
+  systemd/
+    athanor-monitor.service     # daemon posizioni, auto-restart
+    athanor-dashboard.service   # Streamlit porta 8501
+    athanor-schedule.service    # runner one-shot per cron
+  nginx/
+    athanor.conf                # reverse proxy + basic auth
+  cron/
+    crontab.txt                 # schedule completo (ET timezone)
+```
+
+### Cron schedule
+
+| Orario ET | Task |
+|-----------|------|
+| 08:30 Mon-Fri | `run_pipeline --mode full` |
+| 08:35 Mon-Fri | Send pre-market email |
+| 09:25 Mon-Fri | Start monitor daemon |
+| 16:05 Mon-Fri | Stop monitor daemon |
+| 17:00 Mon-Fri | Send post-market email |
+| 02:00 daily | ML nightly training |
+| 03:00 daily | Backup SQLite |
+| 03:30 daily | Cleanup cache > 30gg |
+
+### Deploy one-click
+
+```powershell
+.\scripts\deploy.ps1 -VpsHost athanor-vps
+# git push → SSH pull → pip install → db migrate → restart → health check
+```
+
+### Health check
+
+```bash
+python -m src.run_pipeline --health-check   # JSON: db_ok, predictions_today, CB flags
+.\scripts\health_check.ps1 -VpsHost athanor-vps   # full check con servizi + HTTP
+```
+
+### Documentazione operativa
+
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — 10 scenari di guasto con comandi copy-paste
+- [`docs/OPERATOR_QUICKSTART.md`](docs/OPERATOR_QUICKSTART.md) — guida 2 pagine per chi gestisce senza sviluppare
 
 ---
 

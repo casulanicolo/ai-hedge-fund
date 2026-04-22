@@ -539,6 +539,48 @@ def _run_backtest_single_day(tickers: list, as_of: str) -> bool:
         return False
 
 
+def _health_check() -> dict:
+    """
+    Compact JSON health check for cron/deploy scripts.
+    Returns dict; caller prints JSON and exits 0 (healthy) or 1.
+    """
+    import os
+    status = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "db_ok": False,
+        "predictions_total": 0,
+        "predictions_today": 0,
+        "pipeline_runs_24h": 0,
+        "kill_switch_armed": False,
+        "cb_flags": [],
+        "errors": [],
+    }
+    try:
+        conn = _get_conn()
+        status["db_ok"] = True
+        status["predictions_total"] = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
+        today = datetime.now(timezone.utc).date().isoformat()
+        status["predictions_today"] = conn.execute(
+            "SELECT COUNT(*) FROM predictions WHERE DATE(timestamp)=?", (today,)
+        ).fetchone()[0]
+        status["pipeline_runs_24h"] = conn.execute(
+            "SELECT COUNT(*) FROM pipeline_runs WHERE started_at > datetime('now','-24 hours')"
+        ).fetchone()[0]
+        conn.close()
+    except Exception as exc:
+        status["errors"].append(f"db: {exc}")
+
+    status["kill_switch_armed"] = os.path.exists(".athanor_kill")
+
+    for cb_id in ("cb1", "cb3", "cb5"):
+        from pathlib import Path
+        flags = list(Path(".").glob(f".circuit_breaker_{cb_id}_*"))
+        if flags:
+            status["cb_flags"].append(cb_id)
+
+    return status
+
+
 def main():
     parser = argparse.ArgumentParser(description="Athanor Alpha — Pipeline principale")
     parser.add_argument("tickers", nargs="*", help="Ticker opzionali (default: da config/tickers.yaml)")
@@ -566,7 +608,19 @@ def main():
         default=None,
         help="Single-day backtest debug. Format YYYY-MM-DD. Skips execution and email.",
     )
+    parser.add_argument(
+        "--health-check",
+        action="store_true",
+        default=False,
+        help="Print compact JSON health status and exit 0 (healthy) or 1 (issues).",
+    )
     args = parser.parse_args()
+
+    if args.health_check:
+        hc = _health_check()
+        print(json.dumps(hc, indent=2))
+        unhealthy = not hc["db_ok"] or hc["kill_switch_armed"] or bool(hc["errors"])
+        sys.exit(1 if unhealthy else 0)
 
     tickers = load_tickers(args.tickers if args.tickers else None)
     if not tickers:

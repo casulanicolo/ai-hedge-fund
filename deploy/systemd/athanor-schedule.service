@@ -1,0 +1,24 @@
+[Unit]
+Description=Athanor Alpha — Scheduled Pipeline Runner
+Documentation=file:///home/athanor/athanor-alpha/docs/RUNBOOK.md
+After=network.target
+
+[Service]
+Type=oneshot
+User=athanor
+Group=athanor
+WorkingDirectory=/home/athanor/athanor-alpha
+EnvironmentFile=/home/athanor/athanor-alpha/.env
+# This service is invoked by cron (see deploy/cron/crontab.txt)
+# The ExecStart below is used for manual "one-shot" invocations.
+ExecStart=/home/athanor/athanor-alpha/.venv/bin/python -m src.run_pipeline --mode full
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=athanor-schedule
+
+MemoryMax=2G
+CPUQuota=100%
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Do NOT set [Install] — this is triggered by cron, not by systemd timer

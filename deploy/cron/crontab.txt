@@ -1,0 +1,41 @@
+# Athanor Alpha — Crontab
+# All times in ET (Eastern Time). Server must be configured to ET timezone.
+# Install: crontab deploy/cron/crontab.txt
+# Verify:  crontab -l
+#
+# TZ must be set at the top for cron to use ET:
+SHELL=/bin/bash
+PATH=/home/athanor/athanor-alpha/.venv/bin:/usr/local/bin:/usr/bin:/bin
+TZ=America/New_York
+PROJ=/home/athanor/athanor-alpha
+
+# ─── Pre-market pipeline (08:30 ET, Mon-Fri) ──────────────────────────────────
+# Runs full analysis + builds pre-market email report
+30 8 * * 1-5  cd $PROJ && .venv/bin/python -m src.run_pipeline --mode full >> logs/pipeline_$(date +\%Y-\%m-\%d).log 2>&1
+
+# ─── Pre-market email send (08:35 ET, Mon-Fri) ────────────────────────────────
+35 8 * * 1-5  cd $PROJ && .venv/bin/python -m scripts.send_premarket_py >> logs/email_$(date +\%Y-\%m-\%d).log 2>&1
+
+# ─── Start monitor daemon (09:25 ET, Mon-Fri) ─────────────────────────────────
+25 9 * * 1-5  systemctl start athanor-monitor
+
+# ─── Stop monitor daemon (16:05 ET, Mon-Fri) ──────────────────────────────────
+5 16 * * 1-5  systemctl stop athanor-monitor
+
+# ─── Post-market email send (17:00 ET, Mon-Fri) ───────────────────────────────
+0 17 * * 1-5  cd $PROJ && .venv/bin/python -m scripts.send_postmarket_py >> logs/email_$(date +\%Y-\%m-\%d).log 2>&1
+
+# ─── Circuit breaker check (every 5 min, market hours Mon-Fri) ────────────────
+*/5 9-16 * * 1-5  cd $PROJ && .venv/bin/python -m src.risk._cb_runner >> logs/circuit_breakers.log 2>&1
+
+# ─── Nightly ML meta-learner retrain (02:00 ET daily) ─────────────────────────
+0 2 * * *  cd $PROJ && .venv/bin/python -m src.ml.train_meta_learner >> logs/train_nightly.log 2>&1
+
+# ─── Database backup (03:00 ET daily) ─────────────────────────────────────────
+0 3 * * *  cd $PROJ && bash scripts/backup_db.sh >> logs/backup.log 2>&1
+
+# ─── Cache cleanup — files older than 30 days (03:30 ET daily) ────────────────
+30 3 * * *  find $PROJ/cache -mtime +30 -type f -delete >> logs/cleanup.log 2>&1
+
+# ─── Outcome recorder — compute forward returns for settled predictions ────────
+0 4 * * 1-5  cd $PROJ && .venv/bin/python scripts/outcome_recorder.py >> logs/outcome_recorder.log 2>&1
