@@ -142,9 +142,12 @@ class ForwardBacktestEngine:
         if next_day is not None:
             self._execute_orders(orders, next_day, ohlcv, today)
 
-        # 5. mark to today's close → record equity
-        marks = {t: self._close_on(ohlcv.get(t), today) for t in self.tickers}
-        marks = {k: v for k, v in marks.items() if v is not None}
+        # 5a. Stop-loss check at today's close
+        close_prices = {t: self._close_on(ohlcv.get(t), today) for t in self.tickers}
+        self._check_stops(close_prices, today)
+
+        # 5b. Mark to today's close → record equity
+        marks = {k: v for k, v in close_prices.items() if v is not None}
         eq = self.portfolio.equity(marks)
         self.equity_curve.append({"Date": pd.Timestamp(today), "Portfolio Value": eq})
 
@@ -164,22 +167,36 @@ class ForwardBacktestEngine:
                 out[t] = df
         return out
 
+    _BACKTEST_ANALYST_NODES = [
+        "warren_buffett", "ben_graham", "charlie_munger",
+        "michael_burry", "bill_ackman", "cathie_wood",
+        "technicals", "fundamentals", "sentiment", "breakout_momentum",
+    ]
+
     def _load_or_build_state(self, today: date) -> Any:
         if self.use_cache:
             cached = load_state(today, self.tickers)
             if cached is not None:
-                # Update in-flight metadata (signals, etc. are recomputed by graph)
-                cached["metadata"]["backtest"] = True
-                cached["metadata"]["skip_execution"] = True
+                self._stamp_backtest_meta(cached)
                 return cached
 
         state = reconstruct_state_at(today, self.tickers, provider=self.provider)
-        state["metadata"]["skip_execution"]      = True
-        state["metadata"]["skip_prediction_log"] = True   # no SQLite writes during backtest
-        state["metadata"]["skip_time_exit"]      = True
+        self._stamp_backtest_meta(state)
         if self.use_cache:
             save_state(today, self.tickers, state)
         return state
+
+    @staticmethod
+    def _stamp_backtest_meta(state: Any) -> None:
+        """Apply all metadata flags required for a clean backtest run."""
+        m = state["metadata"]
+        m["backtest"]              = True
+        m["skip_execution"]        = True
+        m["skip_prediction_log"]   = True
+        m["skip_time_exit"]        = True
+        m["skip_devils_advocate"]  = False
+        m["skip_risk_manager"]     = False
+        m.setdefault("active_analyst_nodes", ForwardBacktestEngine._BACKTEST_ANALYST_NODES)
 
     def _get_graph(self) -> Any:
         if self._graph is not None:
@@ -189,9 +206,21 @@ class ForwardBacktestEngine:
 
     # ── orders + fills ─────────────────────────────────────────────────
     def _extract_orders(self, state: Any) -> list[dict]:
-        po = state.get("data", {}).get("portfolio_output", {})
-        recs = po.get("recommendations", []) if isinstance(po, dict) else []
-        return list(recs)
+        # portfolio_manager writes to "portfolio_recommendations" (not "portfolio_output")
+        po = state.get("data", {}).get("portfolio_recommendations", {})
+        if not isinstance(po, dict):
+            return []
+        recs = po.get("recommendations", [])
+        # Each rec may be a dict or a Pydantic object — normalise to dict
+        out: list[dict] = []
+        for r in recs:
+            if isinstance(r, dict):
+                out.append(r)
+            elif hasattr(r, "model_dump"):
+                out.append(r.model_dump())
+            elif hasattr(r, "__dict__"):
+                out.append(vars(r))
+        return out
 
     def _execute_orders(
         self,
@@ -280,6 +309,22 @@ class ForwardBacktestEngine:
             "stop_loss": pos.stop_loss,
             "opened_at": pos.opened_at, "closed_at": fill_day.isoformat(),
         })
+
+    def _check_stops(self, close_prices: dict[str, Optional[float]], today: date) -> None:
+        """Close positions that hit their stop-loss at today's close."""
+        for ticker in list(self.portfolio.positions):
+            pos = self.portfolio.positions[ticker]
+            close = close_prices.get(ticker)
+            if close is None:
+                continue
+            hit = (
+                (pos.side == "LONG"  and close <= pos.stop_loss) or
+                (pos.side == "SHORT" and close >= pos.stop_loss)
+            )
+            if hit:
+                logger.info("Stop-loss hit %s @ %.2f (stop=%.2f, side=%s) on %s",
+                            ticker, close, pos.stop_loss, pos.side, today)
+                self._close_position(ticker, close, today)
 
     # ── price helpers ──────────────────────────────────────────────────
     @staticmethod

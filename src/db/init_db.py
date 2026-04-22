@@ -493,6 +493,58 @@ def get_monitor_ticks(
 
 
 # ─────────────────────────────────────────────
+# CRUD — ML Model Registry  (Fase 7)
+# ─────────────────────────────────────────────
+
+def insert_ml_model_registry(
+    conn: sqlite3.Connection,
+    model_path: str,
+    trained_at: str,
+    dataset_rows: int,
+    auc_train: float,
+    auc_val: float,
+    auc_test: float,
+    brier_test: float,
+    promoted: bool,
+    notes: str = "",
+) -> int:
+    """Insert a new row into ml_model_registry. Returns rowid."""
+    cur = conn.execute(
+        """
+        INSERT INTO ml_model_registry
+            (model_path, trained_at, dataset_rows,
+             auc_train, auc_val, auc_test, brier_test, promoted, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            model_path, trained_at, dataset_rows,
+            auc_train, auc_val, auc_test, brier_test,
+            int(promoted), notes,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_current_ml_model(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
+    """Return the most recently promoted model registry row, or None."""
+    return conn.execute(
+        "SELECT * FROM ml_model_registry WHERE promoted=1 "
+        "ORDER BY trained_at DESC LIMIT 1"
+    ).fetchone()
+
+
+def get_ml_model_history(
+    conn: sqlite3.Connection, limit: int = 20
+) -> list[sqlite3.Row]:
+    """Return recent model registry rows, newest first."""
+    return conn.execute(
+        "SELECT * FROM ml_model_registry ORDER BY trained_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+# ─────────────────────────────────────────────
 # CLI entrypoint
 # ─────────────────────────────────────────────
 

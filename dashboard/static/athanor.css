@@ -1,0 +1,161 @@
+/* dashboard/static/athanor.css
+   ─────────────────────────────
+   Brand override on top of Streamlit's dark theme. Loaded once by app.py
+   via st.markdown(<style>…</style>) — keep file small, no @imports.
+
+   Palette mirrors components.py constants:
+     bg          #0e1117
+     fg          #e6e6e6
+     muted       #8a8f98
+     accent      #3ec1d3   (portfolio cyan)
+     benchmark   #8a8f98   (SPY gray)
+     positive    #27ae60
+     negative    #c0392b
+     warn        #e8a83a
+     kill        #ff3b3b
+*/
+
+:root {
+    --athanor-bg:        #0e1117;
+    --athanor-bg-2:      #161a22;
+    --athanor-fg:        #e6e6e6;
+    --athanor-muted:     #8a8f98;
+    --athanor-border:    #222;
+    --athanor-accent:    #3ec1d3;
+    --athanor-positive:  #27ae60;
+    --athanor-negative:  #c0392b;
+    --athanor-warn:      #e8a83a;
+    --athanor-kill:      #ff3b3b;
+    --athanor-mono:      "JetBrains Mono", "Fira Code", "Cascadia Code",
+                         Consolas, "Liberation Mono", monospace;
+}
+
+/* ── Page chrome ─────────────────────────────────────────────────────── */
+
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: var(--athanor-bg) !important;
+    color: var(--athanor-fg) !important;
+}
+
+[data-testid="stHeader"] { background: transparent !important; }
+
+/* tighter top padding so the header_strip sits closer to the top */
+.block-container { padding-top: 1.2rem !important; }
+
+/* ── Tab bar ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="tab-list"] {
+    gap: 4px !important;
+    border-bottom: 1px solid var(--athanor-border) !important;
+}
+[data-baseweb="tab"] {
+    background: var(--athanor-bg-2) !important;
+    color: var(--athanor-muted) !important;
+    border-radius: 6px 6px 0 0 !important;
+    padding: 8px 16px !important;
+    font-family: var(--athanor-mono) !important;
+    font-size: 13px !important;
+    letter-spacing: 0.4px;
+}
+[data-baseweb="tab"][aria-selected="true"] {
+    color: var(--athanor-accent) !important;
+    border-bottom: 2px solid var(--athanor-accent) !important;
+}
+
+/* ── KPI cards (st.metric) ───────────────────────────────────────────── */
+
+[data-testid="stMetric"] {
+    background: var(--athanor-bg-2);
+    border: 1px solid var(--athanor-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+[data-testid="stMetricLabel"] {
+    color: var(--athanor-muted) !important;
+    font-family: var(--athanor-mono) !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+[data-testid="stMetricValue"] {
+    font-family: var(--athanor-mono) !important;
+    font-size: 24px !important;
+    font-weight: 700 !important;
+    color: var(--athanor-fg) !important;
+}
+[data-testid="stMetricDelta"] {
+    font-family: var(--athanor-mono) !important;
+    font-size: 11px !important;
+}
+
+/* ── DataFrames ──────────────────────────────────────────────────────── */
+
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--athanor-border);
+    border-radius: 6px;
+}
+[data-testid="stDataFrame"] * {
+    font-family: var(--athanor-mono) !important;
+    font-size: 12px !important;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+
+div[data-testid="stButton"] > button {
+    background: var(--athanor-bg-2);
+    color: var(--athanor-fg);
+    border: 1px solid var(--athanor-border);
+    border-radius: 6px;
+    font-family: var(--athanor-mono);
+    font-size: 13px;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+div[data-testid="stButton"] > button:hover {
+    border-color: var(--athanor-accent);
+    color: var(--athanor-accent);
+}
+
+/* Kill button override matches components.kill_switch_button() */
+button[kind="primary"][data-athanor-kill="true"] {
+    background: var(--athanor-kill) !important;
+    color: #fff !important;
+    border: 2px solid #fff !important;
+    font-weight: 700;
+    height: 64px;
+    font-size: 18px;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+
+[data-testid="stSidebar"] {
+    background: var(--athanor-bg-2) !important;
+    border-right: 1px solid var(--athanor-border);
+}
+[data-testid="stSidebar"] * {
+    font-family: var(--athanor-mono) !important;
+}
+
+/* ── Plotly ─────────────────────────────────────────────────────────── */
+
+.js-plotly-plot .modebar { display: none !important; }   /* hide toolbar */
+.js-plotly-plot { background: transparent !important; }
+
+/* ── Misc ────────────────────────────────────────────────────────────── */
+
+hr { border-color: var(--athanor-border) !important; }
+code, pre {
+    font-family: var(--athanor-mono) !important;
+    background: var(--athanor-bg-2) !important;
+}
+
+/* ── Mobile (≤ 480px) — Tab 1 must remain readable, others may degrade  */
+
+@media (max-width: 480px) {
+    [data-testid="stMetric"] {
+        padding: 8px 10px;
+    }
+    [data-testid="stMetricValue"] { font-size: 18px !important; }
+    [data-testid="stMetricLabel"] { font-size: 10px !important; }
+    [data-baseweb="tab"]          { padding: 6px 10px !important;
+                                    font-size: 11px !important; }
+}

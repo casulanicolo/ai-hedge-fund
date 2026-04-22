@@ -15,7 +15,12 @@
       "Bash(.venv/Scripts/python.exe -c \"from src.utils.llm import call_llm; print\\('import ok'\\)\")",
       "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('src/alerts/premarket_builder.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('src/alerts/postmarket_builder.py',encoding='utf-8'\\).read\\(\\)\\); print\\('parse ok'\\)\")",
       "Bash(.venv/Scripts/python.exe -m src.alerts.premarket_builder --help)",
-      "Bash(.venv/Scripts/python.exe -m src.alerts.postmarket_builder --help)"
+      "Bash(.venv/Scripts/python.exe -m src.alerts.postmarket_builder --help)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('dashboard/data_sources.py',encoding='utf-8'\\).read\\(\\)\\); print\\('parse ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('dashboard/components.py',encoding='utf-8'\\).read\\(\\)\\); print\\('parse ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; [ast.parse\\(open\\(p,encoding='utf-8'\\).read\\(\\)\\) for p in ['dashboard/app.py','dashboard/__init__.py','dashboard/tabs/__init__.py']]; print\\('parse ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pip install streamlit plotly yfinance --quiet)",
+      "Bash(.venv/Scripts/python.exe -m pip install streamlit-autorefresh --quiet)"
     ]
   }
 }

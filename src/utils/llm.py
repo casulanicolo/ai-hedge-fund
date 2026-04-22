@@ -1,5 +1,6 @@
 """Helper functions for LLM"""
 
+import hashlib
 import json
 import logging
 import time
@@ -9,6 +10,128 @@ from src.utils.progress import progress
 from src.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+# Dimension map: all agents in the same dimension share the same seed direction
+# so the dimension aggregation in portfolio_manager produces a clear signal.
+_AGENT_DIM_MAP: dict[str, str] = {
+    "fundamentals_analyst_agent": "FUNDAMENTALS",
+    "warren_buffett_agent":       "FUNDAMENTALS",
+    "ben_graham_agent":           "FUNDAMENTALS",
+    "charlie_munger_agent":       "FUNDAMENTALS",
+    "michael_burry_agent":        "FUNDAMENTALS",
+    "bill_ackman_agent":          "FUNDAMENTALS",
+    "cathie_wood_agent":          "FUNDAMENTALS",
+    "phil_fisher_agent":          "FUNDAMENTALS",
+    "mohnish_pabrai_agent":       "FUNDAMENTALS",
+    "peter_lynch_agent":          "FUNDAMENTALS",
+    "rakesh_jhunjhunwala_agent":  "FUNDAMENTALS",
+    "aswath_damodaran_agent":     "FUNDAMENTALS",
+    "technical_analyst_agent":    "TECHNICAL",
+    "breakout_momentum":          "TECHNICAL",
+    "sentiment_agent":            "SENTIMENT",
+    "news_sentiment_agent":       "SENTIMENT",
+    "macro_agent":                "MACRO",
+}
+
+
+def _backtest_seeded_default(
+    pydantic_model: type[BaseModel],
+    agent_name: str | None,
+    state: dict | None,
+) -> BaseModel:
+    """Deterministic seeded default for backtest mode.
+
+    Handles two signal formats used across agents:
+      - direction format: direction=LONG/SHORT/NEUTRAL (AgentOutput, SentimentSignal, ...)
+      - signal format:   signal=bullish/bearish/neutral  (AswathDamodaranSignal, BreakoutSignal, ...)
+
+    Seeds by DIMENSION so all agents in same dim vote same direction → clear dim_score.
+    Seed: SHA-256(dim + ":" + sorted_tickers + ":" + as_of_date)
+    Distribution: ~40% LONG / 25% SHORT / 35% NEUTRAL per (dim, ticker_set, date).
+
+    Non-signal models fall through to create_default_response (risk reports, etc.).
+    """
+    fields = set(pydantic_model.model_fields)
+    has_direction = "direction" in fields
+    has_signal    = "signal"    in fields
+    has_confidence = "confidence" in fields
+
+    is_signal_model = (has_direction or has_signal) and has_confidence
+    if not is_signal_model:
+        return create_default_response(pydantic_model)
+
+    meta       = (state or {}).get("metadata", {})
+    as_of      = str(meta.get("as_of") or "")
+    tickers    = meta.get("tickers") or []
+    ticker_str = "|".join(sorted(str(t) for t in tickers))
+
+    dim      = _AGENT_DIM_MAP.get(agent_name or "", "OTHER")
+    seed_str = f"{dim}:{ticker_str}:{as_of}"
+    digest   = int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16)
+
+    bucket = digest % 100
+    if bucket < 40:
+        direction_long = "LONG"
+    elif bucket < 65:
+        direction_long = "SHORT"
+    else:
+        direction_long = "NEUTRAL"
+
+    # Map to the field format required by this model
+    _sig_map = {"LONG": "bullish", "SHORT": "bearish", "NEUTRAL": "neutral"}
+    direction_value = direction_long                   # for "direction" field
+    signal_value    = _sig_map[direction_long]         # for "signal" field
+
+    # Confidence in [0.65, 0.80] (avg ≈ 0.725) as float 0-1.
+    # _weighted_signals normalises values >1 by /100, so 0.72 works for all
+    # model scales — both 0-1 and 0-100 converge to ~0.72 after normalisation.
+    conf_float = 0.65 + (digest % 16) / 100.0
+
+    # Build kwargs for field-by-field construction
+    def _build_kwargs() -> dict:
+        kwargs: dict = {}
+        for fname, fld in pydantic_model.model_fields.items():
+            if fname == "direction":
+                kwargs[fname] = direction_value
+            elif fname == "signal":
+                kwargs[fname] = signal_value
+            elif fname == "confidence":
+                kwargs[fname] = conf_float
+            elif fname == "expected_return":
+                er = 0.02 if direction_long == "LONG" else (-0.02 if direction_long == "SHORT" else 0.0)
+                kwargs[fname] = er
+            elif fld.annotation == str:
+                kwargs[fname] = "Backtest seeded default"
+            elif fld.annotation == float:
+                kwargs[fname] = 0.0
+            elif fld.annotation == int:
+                kwargs[fname] = 0
+            elif hasattr(fld.annotation, "__origin__") and fld.annotation.__origin__ == dict:
+                kwargs[fname] = {}
+            elif hasattr(fld.annotation, "__origin__") and fld.annotation.__origin__ is list:
+                kwargs[fname] = []
+            elif hasattr(fld.annotation, "__args__"):
+                kwargs[fname] = fld.annotation.__args__[0]
+            else:
+                kwargs[fname] = None
+        return kwargs
+
+    # Try minimal construction first (model may have optional fields)
+    try:
+        if has_direction:
+            return pydantic_model(direction=direction_value, confidence=conf_float)
+        else:
+            return pydantic_model(signal=signal_value, confidence=conf_float)
+    except Exception:
+        pass
+
+    # Full field-by-field construction
+    try:
+        return pydantic_model(**_build_kwargs())
+    except Exception as e:
+        logger.warning("[llm] _backtest_seeded_default fallback failed for %s: %s", pydantic_model.__name__, e)
+        return create_default_response(pydantic_model)
 
 
 def call_llm(
@@ -57,12 +180,12 @@ def call_llm(
         if agent_name:
             progress.update_status(agent_name, None, "Backtest mode — LLM skipped")
         logger.info(
-            "[llm] BACKTEST MODE — %s: LLM call blocked, returning deterministic default",
+            "[llm] BACKTEST MODE — %s: LLM call blocked, returning seeded default",
             agent_name or "?",
         )
-        if default_factory:
-            return default_factory()
-        return create_default_response(pydantic_model)
+        # Always use seeded defaults in backtest — agent default_factories return
+        # neutral+0 confidence which kills all conviction math.
+        return _backtest_seeded_default(pydantic_model, agent_name, state)
     # ------------------------------------------------------------------
 
     # Extract model configuration if state is provided and agent_name is available
@@ -285,6 +408,8 @@ def create_default_response(model_class: type[BaseModel]) -> BaseModel:
             default_values[field_name] = 0
         elif hasattr(field.annotation, "__origin__") and field.annotation.__origin__ == dict:
             default_values[field_name] = {}
+        elif hasattr(field.annotation, "__origin__") and field.annotation.__origin__ is list:
+            default_values[field_name] = []
         else:
             # For other types (like Literal), try to use the first allowed value
             if hasattr(field.annotation, "__args__"):

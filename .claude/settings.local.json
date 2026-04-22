@@ -26,7 +26,12 @@
       "Bash(.venv/Scripts/python -c \"from src.utils.analysts import ANALYST_CONFIG; print\\('analysts OK, keys:', sorted\\(ANALYST_CONFIG.keys\\(\\)\\)\\)\")",
       "Bash(.venv/Scripts/python -c \"import requests, re; print\\('requests OK'\\)\")",
       "Bash(python -c ':*)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(.venv/Scripts/python.exe -c \"from dashboard.tabs import positions; from dashboard import components, data_sources; print\\('ok'\\); print\\('has positions_table:', hasattr\\(components, 'positions_table'\\)\\); print\\('has orders_table:', hasattr\\(components, 'orders_table'\\)\\); print\\('has trade_history_table:', hasattr\\(components, 'trade_history_table'\\)\\); print\\('has positions_summary_strip:', hasattr\\(components, 'positions_summary_strip'\\)\\); print\\('ds.get_positions:', hasattr\\(data_sources, 'get_positions'\\)\\); print\\('ds.get_open_orders:', hasattr\\(data_sources, 'get_open_orders'\\)\\); print\\('ds.get_trade_history:', hasattr\\(data_sources, 'get_trade_history'\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import streamlit as st; print\\('streamlit', st.__version__\\); print\\('has st.html:', hasattr\\(st, 'html'\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -m src.backtesting.cli --help)",
+      "Bash(pip install *)"
     ]
   }
 }

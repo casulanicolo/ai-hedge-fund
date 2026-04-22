@@ -199,3 +199,23 @@ CREATE TABLE IF NOT EXISTS monitor_ticks (
 
 CREATE INDEX IF NOT EXISTS idx_monitor_ticks_ticker ON monitor_ticks(ticker, timestamp);
 CREATE INDEX IF NOT EXISTS idx_monitor_ticks_ts     ON monitor_ticks(timestamp);
+
+-- ─────────────────────────────────────────────
+-- 10. ML MODEL REGISTRY  (Fase 7)
+-- Tracks every trained meta-learner: metrics, promotion status.
+-- promoted=1 → this model is the current production model.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ml_model_registry (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_path      TEXT    NOT NULL,               -- path to .joblib file
+    trained_at      TEXT,                           -- ISO-8601 UTC
+    dataset_rows    INTEGER,                        -- rows used for training
+    auc_train       REAL,
+    auc_val         REAL,
+    auc_test        REAL,
+    brier_test      REAL,
+    promoted        INTEGER NOT NULL DEFAULT 0,     -- 1 = current production model
+    notes           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ml_registry_promoted ON ml_model_registry(promoted, trained_at);
