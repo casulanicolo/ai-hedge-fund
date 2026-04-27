@@ -31,7 +31,27 @@
       "Bash(.venv/Scripts/python.exe -c \"import streamlit as st; print\\('streamlit', st.__version__\\); print\\('has st.html:', hasattr\\(st, 'html'\\)\\)\")",
       "Bash(.venv/Scripts/python.exe -c ' *)",
       "Bash(.venv/Scripts/python.exe -m src.backtesting.cli --help)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(ssh -i 'C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key' ubuntu@129.159.206.74 'python3 -c \" *)",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"grep -n 'squeeze\\\\|_close\\\\|_dl\\\\|_fast' /home/ubuntu/ai-hedge-fund/src/risk/circuit_breakers.py\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"sed -i '155s/.*/            _close = _dl[\\\\\"Close\\\\\"].squeeze\\(\\)/' /home/ubuntu/ai-hedge-fund/src/risk/circuit_breakers.py && sed -i '156s/.*/            vix = float\\(_close.iloc[-1]\\) if hasattr\\(_close, \\\\\"iloc\\\\\"\\) else float\\(_close\\)/' /home/ubuntu/ai-hedge-fund/src/risk/circuit_breakers.py && sed -n '153,158p' /home/ubuntu/ai-hedge-fund/src/risk/circuit_breakers.py\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"systemctl list-timers --no-pager 2>/dev/null | grep -i athanor && echo '---' && cat /etc/systemd/system/athanor-monitor.timer && echo '---' && cat /etc/systemd/system/athanor-schedule.service\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"systemctl list-timers --all --no-pager 2>/dev/null | grep -i athanor; crontab -l 2>/dev/null; ls /etc/cron.d/ 2>/dev/null\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"cat /home/ubuntu/ai-hedge-fund/scripts/send_premarket.py && echo '===' && cat /home/ubuntu/ai-hedge-fund/scripts/send_postmarket.py\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"ls /home/ubuntu/ai-hedge-fund/logs/pipeline_2026-04-22.log 2>/dev/null && tail -30 /home/ubuntu/ai-hedge-fund/logs/pipeline_2026-04-22.log 2>/dev/null || echo 'no pipeline log today'\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"ls /home/ubuntu/ai-hedge-fund/logs/pipeline_*.log 2>/dev/null | tail -5 && echo '---' && ls /home/ubuntu/ai-hedge-fund/logs/email_*.log 2>/dev/null | tail -5\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"tail -40 /home/ubuntu/ai-hedge-fund/logs/pipeline_2026-04-21.log 2>/dev/null\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"grep -i 'cron\\\\|CRON' /var/log/syslog 2>/dev/null | grep '2026-04-22' | grep -E '12:30|12:45|13:25' | head -20\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"grep CRON /var/log/syslog 2>/dev/null | tail -20 || journalctl -u cron --no-pager -n 20 2>/dev/null | tail -20\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"grep -n 'send_email\\\\|send_premarket\\\\|send_postmarket\\\\|email' /home/ubuntu/ai-hedge-fund/src/run_pipeline.py | head -30\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"cd /home/ubuntu/ai-hedge-fund && .venv/bin/python -m src.alerts.email_sender 2>&1\")",
+      "Bash(ssh -i 'C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key' ubuntu@129.159.206.74 'cd /home/ubuntu/ai-hedge-fund && .venv/bin/python -c \" *)",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"find /home/ubuntu/ai-hedge-fund -name 'tickers.py' -not -path '*/.venv/*' 2>/dev/null\")",
+      "Bash(ssh -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" ubuntu@129.159.206.74 \"grep -rn 'load_tickers\\\\|TICKERS' /home/ubuntu/ai-hedge-fund/src/run_pipeline.py | head -10\")",
+      "Bash(ssh -i *)",
+      "Bash(cat)",
+      "Bash(scp -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" /tmp/check_db_remote.py ubuntu@129.159.206.74:/tmp/check_db.py)",
+      "Bash(scp -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" \"c:\\\\Users\\\\tomma\\\\Documents\\\\athanor-alpha\\\\src\\\\execution\\\\executor.py\" ubuntu@129.159.206.74:/home/ubuntu/ai-hedge-fund/src/execution/executor.py)"
     ]
   }
 }

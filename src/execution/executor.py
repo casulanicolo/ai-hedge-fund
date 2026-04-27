@@ -110,11 +110,16 @@ class TradeExecutor:
     # ── Pre-checks ───────────────────────────────────────────────────────────
 
     def _check_market_open(self) -> bool:
-        try:
-            return self._adapter.is_market_open()
-        except Exception as exc:
-            logger.warning("[executor] is_market_open failed: %s — assuming closed", exc)
+        # Allow pre-market submission: Alpaca queues DAY orders until open.
+        # Only block after market close (21:00 UTC) or on weekends.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        if now.weekday() >= 5:  # Saturday=5, Sunday=6
             return False
+        market_close_utc = now.replace(hour=21, minute=0, second=0, microsecond=0)
+        if now >= market_close_utc:
+            return False
+        return True
 
     def _check_account(self) -> tuple[bool, str]:
         try:

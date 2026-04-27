@@ -91,8 +91,8 @@ def _check_cb1(adapter) -> CBStatus:
         return CBStatus("CB1", False, "No adapter — skipped")
     try:
         account = adapter.get_account()
-        equity       = float(account.equity)
-        last_equity  = float(getattr(account, "last_equity", equity))
+        equity       = float(account.portfolio_value)
+        last_equity  = float(account.last_equity) if account.last_equity else equity
         if last_equity <= 0:
             return CBStatus("CB1", False, "last_equity=0 — skipped")
         daily_ret = (equity - last_equity) / last_equity
@@ -147,10 +147,13 @@ def _check_cb2(adapter) -> list[CBStatus]:
 def _check_cb3() -> CBStatus:
     """CB3: VIX > 35."""
     try:
-        vix = yf.Ticker("^VIX").fast_info.get("last_price") or yf.download(
-            "^VIX", period="1d", progress=False
-        )["Close"].iloc[-1]
-        vix = float(vix)
+        _fast = yf.Ticker("^VIX").fast_info.get("last_price")
+        if _fast:
+            vix = float(_fast)
+        else:
+            _dl = yf.download("^VIX", period="1d", progress=False)
+            _close = _dl["Close"].squeeze()
+            vix = float(_close.iloc[-1]) if hasattr(_close, "iloc") else float(_close)
         if vix > CB3_VIX_THRESHOLD:
             reason = f"VIX={vix:.1f} > {CB3_VIX_THRESHOLD}"
             log_event(
@@ -206,10 +209,10 @@ def _check_cb5(adapter) -> CBStatus:
         return CBStatus("CB5", False, "No adapter — skipped")
     try:
         account = adapter.get_account()
-        equity = float(account.equity)
+        equity = float(account.portfolio_value)
 
         # Use last_equity as 1-day proxy if weekly baseline not tracked separately
-        last_equity = float(getattr(account, "last_equity", equity))
+        last_equity = float(account.last_equity) if account.last_equity else equity
         if last_equity <= 0:
             return CBStatus("CB5", False, "last_equity=0 — skipped")
 

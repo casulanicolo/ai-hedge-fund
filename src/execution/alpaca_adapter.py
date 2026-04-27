@@ -249,7 +249,8 @@ class AlpacaBrokerAdapter:
             buying_power=float(raw.buying_power),
             cash=float(raw.cash),
             portfolio_value=float(raw.portfolio_value),
-            status=str(raw.status),
+            last_equity=float(getattr(raw, "last_equity", 0) or 0),
+            status=str(raw.status).split(".")[-1],
         )
 
     def get_positions(self) -> list[PositionSnapshot]:
@@ -312,6 +313,17 @@ class AlpacaBrokerAdapter:
 
     def close_position(self, ticker: str, qty: int | None = None) -> OrderSubmitResult:
         from alpaca.trading.requests import ClosePositionRequest
+
+        # Cancel any open orders on this ticker (e.g. bracket SL/TP legs)
+        # so shares are not held_for_orders when we close.
+        try:
+            open_orders = self.get_open_orders()
+            for o in open_orders:
+                if o.ticker == ticker:
+                    self.cancel_order(o.broker_order_id)
+                    logger.info("[alpaca_adapter] cancelled open order %s for %s before close", o.broker_order_id, ticker)
+        except Exception as exc:
+            logger.warning("[alpaca_adapter] pre-close cancel failed for %s: %s", ticker, exc)
 
         t0 = time.perf_counter()
         try:

@@ -25,6 +25,7 @@ class AccountSnapshot(BaseModel):
     buying_power: float
     cash: float
     portfolio_value: float
+    last_equity: float = 0.0
     status: str          # "ACTIVE" | "ACCOUNT_CLOSED" | etc.
 
 
