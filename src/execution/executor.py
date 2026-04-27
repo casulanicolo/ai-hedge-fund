@@ -30,6 +30,52 @@ logger = logging.getLogger(__name__)
 
 DAILY_ORDER_CAP = int(__import__("os").getenv("ALPACA_DAILY_ORDER_CAP", "20"))
 
+
+def reconcile_orders(adapter: "BrokerAdapter") -> int:
+    """
+    Fetch pending orders from DB, query broker for current status, write updates back.
+    Returns count of rows updated.
+    """
+    try:
+        from src.db.init_db import get_connection, get_pending_orders, update_executed_order_status
+    except Exception as exc:
+        logger.warning("[executor] reconcile_orders: DB import failed: %s", exc)
+        return 0
+
+    conn = get_connection()
+    rows = get_pending_orders(conn)
+    updated = 0
+    for row in rows:
+        broker_order_id = row[1]
+        if not broker_order_id:
+            continue
+        snapshot = adapter.get_order(broker_order_id)
+        if snapshot is None:
+            continue
+        filled_at_str = (
+            snapshot.filled_at.isoformat()
+            if snapshot.filled_at is not None
+            else None
+        )
+        update_executed_order_status(
+            conn,
+            broker_order_id=broker_order_id,
+            status=snapshot.status,
+            fill_price=snapshot.filled_avg_price,
+            filled_qty=snapshot.filled_qty if snapshot.filled_qty else None,
+            filled_at=filled_at_str,
+        )
+        updated += 1
+        logger.info(
+            "[executor] reconcile: %s → status=%s fill=%.4f qty=%s",
+            broker_order_id[:8], snapshot.status,
+            snapshot.filled_avg_price or 0,
+            snapshot.filled_qty,
+        )
+    conn.close()
+    logger.info("[executor] reconcile_orders: updated %d rows", updated)
+    return updated
+
 # Priority order for execution sequencing
 _ACTION_PRIORITY: dict[str, int] = {
     "CLOSE":      0,

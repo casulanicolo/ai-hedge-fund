@@ -166,9 +166,10 @@ CREATE TABLE IF NOT EXISTS executed_orders (
     quantity             INTEGER,
     notional_usd         REAL,
     fill_price           REAL,                      -- NULL at submission; updated on fill
+    filled_qty           REAL,                      -- NULL at submission; updated on fill
     stop_loss            REAL,
     take_profit          REAL,
-    status               TEXT,                      -- SUBMITTED | FILLED | PARTIAL_FILLED | REJECTED | CANCELED | SKIPPED
+    status               TEXT,                      -- PENDING_NEW | FILLED | PARTIAL_FILLED | REJECTED | CANCELED | SKIPPED
     submitted_at         TEXT,                      -- ISO-8601 UTC
     filled_at            TEXT,                      -- ISO-8601 UTC or NULL
     rejection_reason     TEXT,

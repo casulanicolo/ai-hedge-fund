@@ -68,12 +68,24 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
 def init_db(db_path: Path = DB_PATH) -> None:
     """
     Create all tables from schema.sql (idempotent — uses CREATE IF NOT EXISTS).
+    Also applies incremental migrations for columns added after initial deploy.
     """
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     conn = get_connection(db_path)
     with conn:
         conn.executescript(schema)
+    _migrate_executed_orders(conn)
+    conn.close()
     logger.info("Database initialised at %s", db_path)
+
+
+def _migrate_executed_orders(conn: sqlite3.Connection) -> None:
+    """Add filled_qty column to executed_orders if missing (idempotent)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(executed_orders)").fetchall()}
+    if "filled_qty" not in cols:
+        conn.execute("ALTER TABLE executed_orders ADD COLUMN filled_qty REAL")
+        conn.commit()
+        logger.info("[init_db] Migration: added filled_qty column to executed_orders")
 
 
 # ─────────────────────────────────────────────
@@ -434,6 +446,42 @@ def get_executed_orders(
         f"SELECT * FROM executed_orders {where} ORDER BY submitted_at DESC LIMIT ?",
         params,
     ).fetchall()
+
+
+def get_pending_orders(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return orders not yet in a terminal state (need reconciliation with broker)."""
+    terminal = ("FILLED", "PARTIAL_FILLED", "CANCELED", "EXPIRED", "REJECTED",
+                "DONE_FOR_DAY", "SKIPPED")
+    placeholders = ",".join("?" * len(terminal))
+    return conn.execute(
+        f"SELECT id, broker_order_id, ticker FROM executed_orders"
+        f" WHERE broker_order_id IS NOT NULL"
+        f"   AND UPPER(status) NOT IN ({placeholders})",
+        terminal,
+    ).fetchall()
+
+
+def update_executed_order_status(
+    conn: sqlite3.Connection,
+    broker_order_id: str,
+    status: str,
+    fill_price: float | None,
+    filled_qty: float | None,
+    filled_at: str | None,
+) -> None:
+    """Update fill fields on an executed_orders row after broker reconciliation."""
+    try:
+        conn.execute(
+            """
+            UPDATE executed_orders
+               SET status = ?, fill_price = ?, filled_qty = ?, filled_at = ?
+             WHERE broker_order_id = ?
+            """,
+            (status, fill_price, filled_qty, filled_at, broker_order_id),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("[init_db] update_executed_order_status failed: %s", exc)
 
 
 # ─────────────────────────────────────────────

@@ -460,6 +460,17 @@ def run_pipeline(tickers, send_email=False, mode="full", live=False):
         signals = final_state.get("data", {}).get("analyst_signals", {})
         log.info(f"[3/4] Grafo completato. Agenti con segnali: {len(signals)}")
 
+        if live:
+            log.info("[3/4] Reconciling order statuses with Alpaca...")
+            try:
+                from src.execution.alpaca_adapter import AlpacaBrokerAdapter
+                from src.execution.executor import reconcile_orders
+                _adapter = AlpacaBrokerAdapter()
+                n = reconcile_orders(_adapter)
+                log.info(f"[3/4] Reconciliation complete: {n} orders updated.")
+            except Exception as e:
+                log.warning(f"[3/4] reconcile_orders failed (non-blocking): {e}")
+
         if mode == "full":
             log.info("[4/4] Aggiornamento pesi agenti...")
             try:

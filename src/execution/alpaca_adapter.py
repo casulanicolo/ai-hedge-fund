@@ -74,6 +74,13 @@ def _log_api(
         f.write(json.dumps(entry, default=str) + "\n")
 
 
+def _normalize_status(s) -> str:
+    """Return uppercase status name from an Alpaca enum or string, e.g. 'FILLED'."""
+    if hasattr(s, "name"):
+        return s.name.upper()
+    return str(s).split(".")[-1].upper()
+
+
 def _serialize_resp(resp) -> dict:
     if hasattr(resp, "model_dump"):
         result = resp.model_dump(mode="json")
@@ -281,7 +288,7 @@ class AlpacaBrokerAdapter:
                 action=str(o.side),
                 qty=float(o.qty) if o.qty else None,
                 notional=float(o.notional) if o.notional else None,
-                status=str(o.status),
+                status=_normalize_status(o.status),
                 filled_qty=float(o.filled_qty or 0),
                 filled_avg_price=float(o.filled_avg_price) if o.filled_avg_price else None,
                 submitted_at=o.submitted_at,
@@ -289,6 +296,26 @@ class AlpacaBrokerAdapter:
             )
             for o in raw_orders
         ]
+
+    def get_order(self, broker_order_id: str) -> "OrderSnapshot | None":
+        try:
+            import uuid
+            o = _with_retry(self._client.get_order_by_id, uuid.UUID(broker_order_id))
+            return OrderSnapshot(
+                broker_order_id=str(o.id),
+                ticker=o.symbol,
+                action=str(o.side),
+                qty=float(o.qty) if o.qty else None,
+                notional=float(o.notional) if o.notional else None,
+                status=_normalize_status(o.status),
+                filled_qty=float(o.filled_qty or 0),
+                filled_avg_price=float(o.filled_avg_price) if o.filled_avg_price else None,
+                submitted_at=o.submitted_at,
+                filled_at=o.filled_at,
+            )
+        except Exception as exc:
+            logger.error("[alpaca_adapter] get_order %s failed: %s", broker_order_id, exc)
+            return None
 
     def get_clock(self) -> ClockInfo:
         clock = self._client.get_clock()
@@ -346,7 +373,7 @@ class AlpacaBrokerAdapter:
             return OrderSubmitResult(
                 success=True,
                 broker_order_id=str(resp.id) if hasattr(resp, "id") else None,
-                status=str(resp.status) if hasattr(resp, "status") else "SUBMITTED",
+                status=_normalize_status(resp.status) if hasattr(resp, "status") else "SUBMITTED",
                 raw_response=resp_dict,
             )
         except Exception as exc:
@@ -426,7 +453,7 @@ class AlpacaBrokerAdapter:
                 return OrderSubmitResult(
                     success=True,
                     broker_order_id=str(resp.id),
-                    status=str(resp.status),
+                    status=_normalize_status(resp.status),
                     raw_response=resp_dict,
                 )
 
@@ -477,7 +504,7 @@ class AlpacaBrokerAdapter:
                     return OrderSubmitResult(
                         success=True,
                         broker_order_id=str(resp.id),
-                        status=str(resp.status),
+                        status=_normalize_status(resp.status),
                         raw_response=_serialize_resp(resp),
                     )
 
