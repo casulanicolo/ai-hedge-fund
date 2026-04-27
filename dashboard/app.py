@@ -54,16 +54,13 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _inject_css() -> None:
-    """Standard Streamlit CSS injection: read athanor.css and inject as
-       a <style> block via st.markdown(unsafe_allow_html=True). Must be
-       called at the top of the script, before st.tabs()."""
     css_path = Path(__file__).parent / "static" / "athanor.css"
-    if css_path.exists():
-        css = css_path.read_text(encoding="utf-8")
-        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-    else:
-        log.warning("athanor.css missing at %s — using Streamlit defaults",
-                    css_path)
+    if not css_path.exists():
+        log.warning("athanor.css missing at %s — using Streamlit defaults", css_path)
+        return
+    css = css_path.read_bytes().decode("utf-8-sig").strip()  # utf-8-sig strips BOM
+    css = css.replace("</style>", "<\\/style>")
+    st.markdown(f"<style>\n{css}\n</style>", unsafe_allow_html=True)
 
 
 _inject_css()
