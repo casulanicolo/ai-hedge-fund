@@ -1,0 +1,29 @@
+{
+  "label": "run",
+  "pid": 105281,
+  "status": "running",
+  "started_at": "2026-04-27T19:32:37.539081+00:00",
+  "finished_at": null,
+  "exit_code": null,
+  "log_path": "/home/ubuntu/ai-hedge-fund/logs/backtest_run.log",
+  "args": [
+    "/home/ubuntu/ai-hedge-fund/.venv/bin/python3.11",
+    "-m",
+    "src.backtesting.cli",
+    "--label",
+    "run",
+    "--walk-forward",
+    "--is-start",
+    "2022-04-27",
+    "--is-end",
+    "2024-04-27",
+    "--oos-start",
+    "2024-04-27",
+    "--oos-end",
+    "2026-04-27",
+    "--tickers",
+    "TSLA",
+    "--capital",
+    "1000.0"
+  ]
+}
