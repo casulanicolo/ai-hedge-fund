@@ -260,6 +260,16 @@ def _execute_decision(
             run_id=run_id,
         )
         result = adapter.submit_order(order)
+
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        try:
+            from src.db.init_db import get_connection, insert_executed_order
+            conn = get_connection()
+            insert_executed_order(conn, run_id, order, result, submitted_at)
+            conn.close()
+        except Exception as _e:
+            log.warning("[daemon] insert_executed_order failed: %s", _e)
+
         return result.success, result.broker_order_id
 
     return False, None
