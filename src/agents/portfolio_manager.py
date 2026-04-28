@@ -1072,6 +1072,12 @@ def _build_trade_orders(
         notional: float | None = None
         if action != "HOLD":
             notional = float(size_usd) if size_usd is not None else None
+            # Fallback: trade_levels missing (e.g. ticker dropped by sector cap) but
+            # portfolio_manager approved it anyway — compute notional from sizing_pct.
+            if notional is None and action in ("OPEN_LONG", "OPEN_SHORT"):
+                sizing_pct = rec.get("sizing_pct") or 0.0
+                if sizing_pct > 0:
+                    notional = round(sizing_pct / 100.0 * PORTFOLIO_SIZE_USD, 0)
             if entry_price and notional and entry_price > 0:
                 quantity = floor(notional / entry_price) or None
 

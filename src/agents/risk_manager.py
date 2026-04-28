@@ -122,9 +122,8 @@ def _get_returns(state: AgentState, tickers: list[str]) -> pd.DataFrame:
             series[ticker] = log_ret
 
         except Exception as e:
-                logger.warning("_get_returns: errore nel processare il ticker %s — %s", ticker, e)
-                continue
-        return pd.DataFrame()
+            logger.warning("_get_returns: errore nel processare il ticker %s — %s", ticker, e)
+            continue
 
     df = pd.DataFrame(series)
     return df.dropna()
@@ -642,9 +641,10 @@ def risk_manager_agent(state: AgentState) -> dict:
                     ticker_flags[t2].append(f"High correlation with {t1} ({c:.2f})")
 
     # ── 10. ATR-based trade levels (entry / SL / TP) ──────────────────────────
-    # Compute only on approved bullish + all bearish tickers
+    # Compute for ALL originally-bullish tickers (including sector-cap / VaR excluded)
+    # so portfolio_manager has levels even for tickers the risk filter dropped.
     progress.update_status(AGENT_ID, None, "Computing ATR trade levels")
-    active_tickers = bullish_approved + bearish_tickers
+    active_tickers = list(dict.fromkeys(bullish_tickers + bearish_tickers))
     trade_levels = _compute_trade_levels(state, active_tickers, agg)
 
     # ── 11. Macro regime (VIX) ────────────────────────────────────────────────
