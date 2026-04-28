@@ -166,12 +166,14 @@ def evaluate_partial_profit_take(
 def evaluate_setup_broken(
     pos: EnrichedPosition,
     ohlcv_5min: pd.DataFrame,
+    clock: ClockInfo,
     avg_daily_volume: Optional[float] = None,
 ) -> ExitDecision | None:
     """
     Detect invalidated setup via:
       a) RSI(14) inversion > 20 points against position in last 3 bars (15 min)
       b) Intraday volume collapse > 50% below 20d avg (if avg_daily_volume provided)
+         Skipped in the last 60 minutes of trading (natural volume taper).
 
     ohlcv_5min must have columns: open, high, low, close, volume (lowercase).
     """
@@ -210,6 +212,8 @@ def evaluate_setup_broken(
         logger.debug("[exit_rules] RSI computation failed: %s", exc)
 
     # ── Volume collapse check ─────────────────────────────────────────────────
+    if _minutes_to_close(clock) < 60:
+        return None  # skip volume check in last hour — natural taper, not a signal
     if avg_daily_volume and avg_daily_volume > 0 and "volume" in df.columns:
         try:
             # Expected volume per 5min bar = daily avg / 78 bars per session
@@ -340,7 +344,7 @@ def evaluate_all_rules(
 
     # Priority 2 — setup broken
     if ohlcv_5min is not None and not ohlcv_5min.empty:
-        d = evaluate_setup_broken(pos, ohlcv_5min, avg_daily_volume)
+        d = evaluate_setup_broken(pos, ohlcv_5min, clock, avg_daily_volume)
         if d:
             return d
 

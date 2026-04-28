@@ -219,6 +219,7 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         "alpha_str": "N/A", "alpha_color": "#888",
         "fills": 0, "exits": 0, "rejects": 0,
     }
+    realized = 0.0
     try:
         from src.db.init_db import get_connection
         conn = get_connection()
@@ -227,7 +228,6 @@ def _fetch_pnl_summary(adapter=None) -> dict:
             "SELECT action, status, fill_price, quantity, notional_usd FROM executed_orders WHERE submitted_at >= ?",
             (today_start,),
         ).fetchall()
-        conn.close()
 
         fills   = sum(1 for r in rows if r["status"] == "FILLED" and r["action"] in ("OPEN_LONG", "OPEN_SHORT"))
         exits   = sum(1 for r in rows if r["status"] == "FILLED" and r["action"] in ("CLOSE", "SCALE_OUT"))
@@ -236,6 +236,37 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         defaults["fills"]   = fills
         defaults["exits"]   = exits
         defaults["rejects"] = rejects
+
+        # Realized P&L: for each filled CLOSE/SCALE_OUT today, match to most recent OPEN
+        close_rows = conn.execute(
+            """
+            SELECT ticker, action, fill_price, quantity
+            FROM executed_orders
+            WHERE submitted_at >= ? AND status = 'FILLED'
+              AND action IN ('CLOSE', 'SCALE_OUT')
+              AND fill_price IS NOT NULL AND quantity IS NOT NULL
+            """,
+            (today_start,),
+        ).fetchall()
+        for row in close_rows:
+            open_row = conn.execute(
+                """
+                SELECT fill_price, action FROM executed_orders
+                WHERE ticker = ? AND action IN ('OPEN_LONG', 'OPEN_SHORT')
+                  AND status = 'FILLED' AND fill_price IS NOT NULL
+                ORDER BY submitted_at DESC LIMIT 1
+                """,
+                (row["ticker"],),
+            ).fetchone()
+            if open_row:
+                close_price = float(row["fill_price"])
+                open_price  = float(open_row["fill_price"])
+                qty         = float(row["quantity"])
+                if open_row["action"] == "OPEN_LONG":
+                    realized += (close_price - open_price) * qty
+                else:
+                    realized += (open_price - close_price) * qty
+        conn.close()
 
     except Exception as exc:
         logger.warning("[postmarket] P&L summary DB failed: %s", exc)
@@ -252,18 +283,18 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         spy_ret = _fetch_spy_return()
 
         unreal_pct = unreal / equity * 100 if equity else 0.0
-        total_pl   = unreal  # realized would need portfolio history API
+        total_pl   = realized + unreal
 
         defaults["unrealized_str"]   = f"${unreal:+,.2f} ({unreal_pct:+.2f}%)"
         defaults["unrealized_color"] = _pl_color(unreal)
+        defaults["realized_str"]     = f"${realized:+,.2f}"
+        defaults["realized_color"]   = _pl_color(realized)
         defaults["pl_str"]           = f"${total_pl:+,.2f}"
         defaults["pl_color"]         = _pl_color(total_pl)
-        defaults["realized_str"]     = "See executed orders"
-        defaults["realized_color"]   = "#555"
         defaults["equity_eod"]       = f"${equity:,.2f}"
 
         if spy_ret is not None:
-            port_ret_pct = unreal_pct
+            port_ret_pct = total_pl / equity * 100 if equity else 0.0
             alpha        = port_ret_pct - spy_ret
             defaults["alpha_str"]   = f"{alpha:+.2f}% vs SPY ({spy_ret:+.2f}%)"
             defaults["alpha_color"] = _pl_color(alpha)

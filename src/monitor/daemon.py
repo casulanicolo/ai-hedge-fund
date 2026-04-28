@@ -265,7 +265,17 @@ def _execute_decision(
         try:
             from src.db.init_db import get_connection, insert_executed_order
             conn = get_connection()
-            insert_executed_order(conn, run_id, order, result, submitted_at)
+            # Use the original open order's run_id (exists in pipeline_runs).
+            # Fallback: ensure monitor run_id has a pipeline_runs row (FK constraint).
+            insert_run_id = getattr(pos, "run_id", None) or run_id
+            if insert_run_id == run_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO pipeline_runs"
+                    " (run_id, started_at, status, tickers) VALUES (?, ?, ?, ?)",
+                    (run_id, submitted_at, "running", "[]"),
+                )
+                conn.commit()
+            insert_executed_order(conn, insert_run_id, order, result, submitted_at)
             conn.close()
         except Exception as _e:
             log.warning("[daemon] insert_executed_order failed: %s", _e)
