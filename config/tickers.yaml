@@ -1,20 +1,47 @@
 tickers:
-  # ── US Large-cap Tech (alpha difficile ma liquidi) ────────────────────────
-  - AAPL   # Apple - Tech
-  - MSFT   # Microsoft - Tech
-  - NVDA   # Nvidia - Semiconductors
+  # ── Technology ──────────────────────────────────────────────────────────────
+  - AAPL    # Apple
+  - MSFT    # Microsoft
+  - NVDA    # Nvidia - Semiconductors
+  - AMD     # Advanced Micro Devices
+  - GOOGL   # Alphabet
+  - META    # Meta Platforms
+  - CRM     # Salesforce
+  - PLTR    # Palantir
 
-  # ── High-beta / High-volatility stocks ───────────────────────────────────
-  - TSLA   # Tesla - Consumer/EV (beta ~1.8)
-  - MSTR   # MicroStrategy - BTC proxy stock (beta ~3.5)
-  - COIN   # Coinbase - Crypto exchange (beta ~2.5)
-  - SMCI   # Super Micro Computer - AI infrastructure (alta volatilità)
-  - MELI   # MercadoLibre - EM e-commerce growth
+  # ── Financials ───────────────────────────────────────────────────────────────
+  - JPM     # JPMorgan Chase
+  - GS      # Goldman Sachs
+  - V       # Visa
+  - MA      # Mastercard
 
-  # ── Crypto (via yfinance, suffisso -USD) ─────────────────────────────────
-  - BTC-USD  # Bitcoin
-  - ETH-USD  # Ethereum
-  - SOL-USD  # Solana
+  # ── Consumer Discretionary ───────────────────────────────────────────────────
+  - AMZN    # Amazon
+  - TSLA    # Tesla
+  - NKE     # Nike
+  - MELI    # MercadoLibre
+
+  # ── Healthcare ───────────────────────────────────────────────────────────────
+  - UNH     # UnitedHealth
+  - LLY     # Eli Lilly
+  - MRNA    # Moderna
+
+  # ── Energy ───────────────────────────────────────────────────────────────────
+  - XOM     # ExxonMobil
+  - CVX     # Chevron
+  - SLB     # SLB (Schlumberger)
+
+  # ── Industrials ──────────────────────────────────────────────────────────────
+  - CAT     # Caterpillar
+  - DE      # Deere & Company
+  - BA      # Boeing
+
+  # ── High-beta / Crypto-proxy ─────────────────────────────────────────────────
+  - MSTR    # MicroStrategy - BTC proxy (beta ~3.5)
+  - COIN    # Coinbase - Crypto exchange (beta ~2.5)
+  - SMCI    # Super Micro Computer - AI infrastructure
+  - HOOD    # Robinhood Markets
+  - RKLB    # Rocket Lab USA
 
 benchmark:
-  - SPY    # S&P 500 ETF — usato solo per alpha/beta, non tradato
+  - SPY     # S&P 500 ETF — used for alpha/beta only, not traded

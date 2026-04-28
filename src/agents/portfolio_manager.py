@@ -775,9 +775,10 @@ def _enrich_with_trade_levels(
     pre_recs: list[dict],
     risk_report: dict,
     weighted: dict[str, dict],
+    effective_portfolio_usd: float = PORTFOLIO_SIZE_USD,
 ) -> list[dict]:
     trade_levels:    dict[str, dict] = risk_report.get("trade_levels", {})
-    max_position_usd = PORTFOLIO_SIZE_USD * MAX_SINGLE_POSITION / 100.0
+    max_position_usd = effective_portfolio_usd * MAX_SINGLE_POSITION / 100.0
 
     for rec in pre_recs:
         ticker = rec["ticker"]
@@ -815,7 +816,7 @@ def _enrich_with_trade_levels(
             rr    = levels["rr_ratio"]
 
             risk_per_share = abs(entry - sl)
-            risk_amount    = PORTFOLIO_SIZE_USD * RISK_PER_TRADE_PCT
+            risk_amount    = effective_portfolio_usd * RISK_PER_TRADE_PCT
 
             if risk_per_share > 0:
                 shares   = floor(risk_amount / risk_per_share)
@@ -865,7 +866,7 @@ def _enrich_with_trade_levels(
                 i_dir   = info_levels["direction"]
 
                 risk_per_share = abs(i_entry - i_sl)
-                risk_amount    = PORTFOLIO_SIZE_USD * RISK_PER_TRADE_PCT
+                risk_amount    = effective_portfolio_usd * RISK_PER_TRADE_PCT
 
                 if risk_per_share > 0:
                     shares       = floor(risk_amount / risk_per_share)
@@ -1040,6 +1041,7 @@ def _build_trade_orders(
     macro_regime: str,
     run_id: str,
     state: AgentState,
+    effective_portfolio_usd: float = PORTFOLIO_SIZE_USD,
 ) -> list[TradeOrder]:
     """
     Convert pre_recs (internal dicts) to structured TradeOrder objects.
@@ -1077,7 +1079,7 @@ def _build_trade_orders(
             if notional is None and action in ("OPEN_LONG", "OPEN_SHORT"):
                 sizing_pct = rec.get("sizing_pct") or 0.0
                 if sizing_pct > 0:
-                    notional = round(sizing_pct / 100.0 * PORTFOLIO_SIZE_USD, 0)
+                    notional = round(sizing_pct / 100.0 * effective_portfolio_usd, 0)
             if entry_price and notional and entry_price > 0:
                 quantity = floor(notional / entry_price) or None
 
@@ -1287,6 +1289,15 @@ def portfolio_manager_agent(state: AgentState) -> dict:
             f"net={agg.get('net_score',0):+.3f} WC={wc:+.4f} dims=[{dim_log}]",
         )
 
+    # 2a. Fetch live buying_power as effective portfolio size
+    try:
+        from src.execution.alpaca_adapter import AlpacaBrokerAdapter
+        _acct = AlpacaBrokerAdapter().get_account()
+        effective_portfolio_usd = float(_acct.buying_power)
+    except Exception:
+        effective_portfolio_usd = PORTFOLIO_SIZE_USD
+    logger.info("[portfolio_manager] effective_portfolio_usd=%.0f", effective_portfolio_usd)
+
     # 2. Pre-compute sizing
     progress.update_status(AGENT_ID, None, "Computing position sizing")
     pre_recs: list[dict] = []
@@ -1338,7 +1349,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     # 3. Select top trades and enrich
     progress.update_status(AGENT_ID, None, "Selecting top trades and enriching with ATR levels")
     pre_recs = _select_top_trades(pre_recs)
-    pre_recs = _enrich_with_trade_levels(pre_recs, risk_report, weighted)
+    pre_recs = _enrich_with_trade_levels(pre_recs, risk_report, weighted, effective_portfolio_usd)
 
     # 4. LLM for reasoning
     progress.update_status(AGENT_ID, None, "Generating reasoning via LLM")
@@ -1414,7 +1425,7 @@ def portfolio_manager_agent(state: AgentState) -> dict:
 
     # 5b. Build structured TradeOrders (Fase 4 – Alpaca prerequisite)
     _run_id = data.get("run_id") or state.get("metadata", {}).get("run_id", "unknown")
-    trade_orders = _build_trade_orders(pre_recs, macro_regime_detected, _run_id, state)
+    trade_orders = _build_trade_orders(pre_recs, macro_regime_detected, _run_id, state, effective_portfolio_usd)
     data["trade_orders"] = trade_orders
 
     progress.update_status(AGENT_ID, None, f"Built {len(trade_orders)} TradeOrders")

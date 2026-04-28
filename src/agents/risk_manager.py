@@ -30,24 +30,45 @@ logger = logging.getLogger(__name__)
 
 AGENT_ID = "risk_manager"
 
-# ── Sector map (hardcoded for the 10-ticker universe) ─────────────────────────
+# ── Sector map (30-ticker universe) ───────────────────────────────────────────
 SECTOR_MAP: dict[str, str] = {
-    # Large-cap US
-    "AAPL": "Technology",
-    "MSFT": "Technology",
+    # Technology
+    "AAPL":  "Technology",
+    "MSFT":  "Technology",
+    "NVDA":  "Technology",
+    "AMD":   "Technology",
     "GOOGL": "Technology",
-    "AMZN": "Consumer Discretionary",
-    "NVDA": "Technology",
-    "META": "Technology",
-    "TSLA": "Consumer Discretionary",
-    "JPM": "Financials",
-    "V": "Financials",
-    "UNH": "Healthcare",
-    # High-beta stocks
-    "MSTR": "Crypto-Proxy",
-    "COIN": "Crypto-Proxy",
-    "SMCI": "Technology",
-    "MELI": "Consumer Discretionary",
+    "META":  "Technology",
+    "CRM":   "Technology",
+    "PLTR":  "Technology",
+    "SMCI":  "Technology",
+    # Financials
+    "JPM":   "Financials",
+    "GS":    "Financials",
+    "V":     "Financials",
+    "MA":    "Financials",
+    # Consumer Discretionary
+    "AMZN":  "Consumer Discretionary",
+    "TSLA":  "Consumer Discretionary",
+    "NKE":   "Consumer Discretionary",
+    "MELI":  "Consumer Discretionary",
+    # Healthcare
+    "UNH":   "Healthcare",
+    "LLY":   "Healthcare",
+    "MRNA":  "Healthcare",
+    # Energy
+    "XOM":   "Energy",
+    "CVX":   "Energy",
+    "SLB":   "Energy",
+    # Industrials
+    "CAT":   "Industrials",
+    "DE":    "Industrials",
+    "BA":    "Industrials",
+    # High-beta / Crypto-proxy
+    "MSTR":  "Crypto-Proxy",
+    "COIN":  "Crypto-Proxy",
+    "HOOD":  "Financials",
+    "RKLB":  "Industrials",
     # Crypto
     "BTC-USD": "Crypto",
     "ETH-USD": "Crypto",
