@@ -83,7 +83,7 @@ def get_current_price(ticker: str) -> Optional[float]:
     try:
         tk = yf.Ticker(ticker)
         price = getattr(tk.fast_info, "last_price", None)
-        if price is not None:
+        if price is not None and price > 0:
             return float(price)
         # Fallback: last close from 5min
         df = get_ohlcv_5min(ticker, periods=1)

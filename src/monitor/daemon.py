@@ -374,15 +374,12 @@ class ActiveMonitorDaemon:
                 ohlcv_5min  = get_ohlcv_5min(ticker)
                 atr         = get_daily_atr(ticker)
                 avg_vol     = get_avg_daily_volume(ticker)
-                age_hours   = pos.days_open * 24.0
-
                 decision = evaluate_all_rules(
                     pos=pos,
                     clock=clock,
                     ohlcv_5min=ohlcv_5min,
                     atr=atr,
                     avg_daily_volume=avg_vol,
-                    run_id_age_hours=age_hours,
                 )
 
                 # Optional LLM layer

@@ -8,11 +8,10 @@ Each function returns ExitDecision | None:
   - ExitDecision → rule fires; daemon executes the action
 
 Priority order used by daemon:
-  1. evaluate_end_of_day         (close before EOD)
-  2. evaluate_setup_broken       (urgent: invalidated setup)
-  3. evaluate_time_decay         (capital efficiency)
-  4. evaluate_partial_profit_take (scale out)
-  5. evaluate_trailing_stop      (SL adjustment, no exit)
+  1. evaluate_setup_broken       (urgent: invalidated setup)
+  2. evaluate_time_decay         (capital efficiency)
+  3. evaluate_partial_profit_take (scale out)
+  4. evaluate_trailing_stop      (SL adjustment, no exit)
 """
 
 from __future__ import annotations
@@ -249,55 +248,6 @@ def evaluate_time_decay(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rule 5 — End-of-day review
-# ─────────────────────────────────────────────────────────────────────────────
-
-def evaluate_end_of_day(
-    pos: EnrichedPosition,
-    clock: ClockInfo,
-    run_id_age_hours: float,
-    atr: float = 0.0,
-) -> ExitDecision | None:
-    """
-    15 minutes before close: if profit < 0.2×ATR AND signals are stale (> 4h old),
-    exit to avoid holding overnight with an outdated thesis.
-    """
-    minutes_left = _minutes_to_close(clock)
-    if minutes_left > 15.0:
-        return None   # not near close yet
-
-    if run_id_age_hours <= 4.0:
-        return None   # signals still fresh — allow holding overnight
-
-    if atr <= 0:
-        # Can't compute ATR check — conservative: exit if near close + stale
-        return ExitDecision(
-            action="FULL_EXIT",
-            reason=(
-                f"EOD: {minutes_left:.0f}min to close, "
-                f"signals {run_id_age_hours:.1f}h old (ATR unavailable)"
-            ),
-            rule="end_of_day_no_atr",
-        )
-
-    profit = pos.profit_per_share()
-    profit_in_atr = profit / atr
-
-    if profit_in_atr < 0.2:
-        return ExitDecision(
-            action="FULL_EXIT",
-            reason=(
-                f"EOD: {minutes_left:.0f}min to close, "
-                f"profit={profit_in_atr:.2f}×ATR < 0.2, "
-                f"signals {run_id_age_hours:.1f}h old"
-            ),
-            rule="end_of_day",
-        )
-
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Combined evaluator (used by daemon)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -307,7 +257,6 @@ def evaluate_all_rules(
     ohlcv_5min: Optional[pd.DataFrame],
     atr: float,
     avg_daily_volume: Optional[float] = None,
-    run_id_age_hours: float = 0.0,
 ) -> ExitDecision:
     """
     Evaluate all rules in priority order. Returns first applicable decision,
@@ -315,23 +264,18 @@ def evaluate_all_rules(
     """
     price = pos.effective_price()
 
-    # Priority 1 — end of day
-    d = evaluate_end_of_day(pos, clock, run_id_age_hours, atr)
-    if d:
-        return d
-
-    # Priority 2 — setup broken
+    # Priority 1 — setup broken
     if ohlcv_5min is not None and not ohlcv_5min.empty:
         d = evaluate_setup_broken(pos, ohlcv_5min, clock, avg_daily_volume)
         if d:
             return d
 
-    # Priority 3 — time decay
+    # Priority 2 — time decay
     d = evaluate_time_decay(pos, atr)
     if d:
         return d
 
-    # Priority 4 — partial profit take
+    # Priority 3 — partial profit take
     d = evaluate_partial_profit_take(
         pos,
         entry=pos.avg_entry_price,
@@ -342,7 +286,7 @@ def evaluate_all_rules(
     if d:
         return d
 
-    # Priority 5 — trailing stop (no exit, just SL move)
+    # Priority 4 — trailing stop (no exit, just SL move)
     d = evaluate_trailing_stop(pos, atr)
     if d:
         return d

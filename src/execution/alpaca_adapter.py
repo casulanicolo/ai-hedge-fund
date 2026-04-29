@@ -461,12 +461,37 @@ class AlpacaBrokerAdapter:
 
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
-            _log_api(order.action, req_data, {"error": str(exc)}, latency)
+            exc_str = str(exc)
+            _log_api(order.action, req_data, {"error": exc_str}, latency)
+
+            # Alpaca 42210000: TP limit below current open price — setup invalidated
+            if "42210000" in exc_str:
+                tp = order.take_profit
+                try:
+                    import re as _re
+                    m = _re.search(r'"base_price"\s*:\s*"?([\d.]+)"?', exc_str)
+                    base_price = float(m.group(1)) if m else None
+                except Exception:
+                    base_price = None
+                if base_price is not None and tp is not None:
+                    rejection_reason = (
+                        f"SKIPPED: open price (${base_price:.2f}) already above "
+                        f"agents' TP (${float(tp):.2f}) — setup invalidated"
+                    )
+                else:
+                    rejection_reason = "SKIPPED: TP below current open price — setup invalidated"
+                logger.warning("[alpaca_adapter] %s %s — %s",
+                               order.action, order.ticker, rejection_reason)
+                return OrderSubmitResult(
+                    success=False, broker_order_id=None, status="SKIPPED",
+                    rejection_reason=rejection_reason, raw_response={},
+                )
+
             logger.error("[alpaca_adapter] submit_order %s %s failed: %s",
                          order.action, order.ticker, exc)
             return OrderSubmitResult(
                 success=False, broker_order_id=None, status="REJECTED",
-                rejection_reason=str(exc), raw_response={},
+                rejection_reason=exc_str, raw_response={},
             )
 
     # ── ADJUST bracket leg ───────────────────────────────────────────────────

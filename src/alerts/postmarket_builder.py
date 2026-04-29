@@ -82,6 +82,8 @@ def _fetch_executed_orders() -> list[dict]:
 
     for r in rows:
         bg, fg = _action_style(r["action"])
+        if r["rejection_reason"] and str(r["rejection_reason"]).startswith("SKIPPED:"):
+            bg, fg = _action_style("SCALE_OUT")
         # Infer fill source
         if "monitor" in (r["run_id"] or ""):
             source = "Monitor intraday"
