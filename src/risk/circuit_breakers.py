@@ -147,13 +147,30 @@ def _check_cb2(adapter) -> list[CBStatus]:
 def _check_cb3() -> CBStatus:
     """CB3: VIX > 35."""
     try:
-        _fast = yf.Ticker("^VIX").fast_info.get("last_price")
-        if _fast:
-            vix = float(_fast)
-        else:
-            _dl = yf.download("^VIX", period="1d", progress=False)
-            _close = _dl["Close"].squeeze()
-            vix = float(_close.iloc[-1]) if hasattr(_close, "iloc") else float(_close)
+        vix = None
+        # fast_info path (newer yfinance uses attribute access, not .get())
+        try:
+            fi = yf.Ticker("^VIX").fast_info
+            _lp = fi.get("last_price") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+            if _lp is not None:
+                vix = float(_lp)
+        except Exception:
+            pass
+
+        if vix is None:
+            _dl = yf.download("^VIX", period="2d", progress=False)
+            if _dl is None or _dl.empty:
+                raise ValueError("empty VIX download")
+            if "Close" not in _dl.columns:
+                raise ValueError("no Close column in VIX data")
+            _close_col = _dl["Close"]
+            _close = _close_col.squeeze()
+            # squeeze() on a 1-column DataFrame returns a Series; scalar if single value
+            last_val = _close.iloc[-1] if hasattr(_close, "iloc") else _close
+            if last_val is None:
+                raise ValueError("VIX Close is None")
+            vix = float(last_val)
+
         if vix > CB3_VIX_THRESHOLD:
             reason = f"VIX={vix:.1f} > {CB3_VIX_THRESHOLD}"
             log_event(

@@ -317,4 +317,12 @@ class TradeExecutor:
             "[executor] Run %s complete: submitted=%d rejected=%d skipped=%d",
             self._run_id[:8], report.submitted, report.rejected, report.skipped,
         )
+
+        # Reconcile fill status for any orders just submitted
+        if report.submitted > 0:
+            try:
+                reconcile_orders(self._adapter)
+            except Exception as exc:
+                logger.warning("[executor] post-execute reconcile failed: %s", exc)
+
         return report

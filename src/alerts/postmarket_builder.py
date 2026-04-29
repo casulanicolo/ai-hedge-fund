@@ -225,13 +225,20 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         conn = get_connection()
         today_start, _ = _today_range()
         rows = conn.execute(
-            "SELECT action, status, fill_price, quantity, notional_usd FROM executed_orders WHERE submitted_at >= ?",
+            "SELECT action, status, fill_price, quantity, notional_usd, broker_order_id"
+            " FROM executed_orders WHERE submitted_at >= ?",
             (today_start,),
         ).fetchall()
 
         fills   = sum(1 for r in rows if r["status"] == "FILLED" and r["action"] in ("OPEN_LONG", "OPEN_SHORT"))
         exits   = sum(1 for r in rows if r["status"] == "FILLED" and r["action"] in ("CLOSE", "SCALE_OUT"))
         rejects = sum(1 for r in rows if r["status"] == "REJECTED")
+
+        # Fallback: if reconcile hasn't run yet, count submitted (has broker_order_id)
+        if fills == 0:
+            fills = sum(1 for r in rows if r["broker_order_id"] and r["action"] in ("OPEN_LONG", "OPEN_SHORT"))
+        if exits == 0:
+            exits = sum(1 for r in rows if r["broker_order_id"] and r["action"] in ("CLOSE", "SCALE_OUT"))
 
         defaults["fills"]   = fills
         defaults["exits"]   = exits
@@ -331,6 +338,15 @@ def _fetch_anomalies() -> list[str]:
 
 def build_context(adapter=None) -> dict:
     """Assemble the full data context for the post-market template."""
+    # Sync fill status before reading DB — ensures FILLED/fill_price are current
+    try:
+        from src.execution.executor import reconcile_orders
+        from src.execution.alpaca_adapter import AlpacaBrokerAdapter
+        _reconcile_adapter = adapter or AlpacaBrokerAdapter()
+        reconcile_orders(_reconcile_adapter)
+    except Exception as exc:
+        logger.warning("[postmarket] reconcile_orders failed: %s", exc)
+
     summary  = _fetch_pnl_summary(adapter=adapter)
     orders   = _fetch_executed_orders()
     monitor  = _fetch_monitor_summary()
