@@ -147,29 +147,47 @@ def _check_cb2(adapter) -> list[CBStatus]:
 def _check_cb3() -> CBStatus:
     """CB3: VIX > 35."""
     try:
+        import math
         vix = None
-        # fast_info path (newer yfinance uses attribute access, not .get())
+
+        # fast_info path — try multiple attribute names for yfinance compatibility
         try:
             fi = yf.Ticker("^VIX").fast_info
-            _lp = fi.get("last_price") if hasattr(fi, "get") else getattr(fi, "last_price", None)
-            if _lp is not None:
-                vix = float(_lp)
+            for _attr in ("last_price", "regularMarketPrice"):
+                _lp = None
+                try:
+                    _lp = fi[_attr] if hasattr(fi, "__getitem__") else None
+                except (KeyError, TypeError):
+                    pass
+                if _lp is None:
+                    _lp = getattr(fi, _attr, None)
+                if _lp is not None:
+                    try:
+                        _lp_f = float(_lp)
+                        if _lp_f > 0 and not math.isnan(_lp_f):
+                            vix = _lp_f
+                            break
+                    except (ValueError, TypeError):
+                        pass
         except Exception:
             pass
 
         if vix is None:
-            _dl = yf.download("^VIX", period="2d", progress=False)
+            _dl = yf.download("^VIX", period="2d", progress=False, auto_adjust=True)
             if _dl is None or _dl.empty:
                 raise ValueError("empty VIX download")
+            # Flatten MultiIndex columns (newer yfinance: ("Close", "^VIX"))
+            if hasattr(_dl.columns, "nlevels") and _dl.columns.nlevels > 1:
+                _dl.columns = _dl.columns.get_level_values(0)
             if "Close" not in _dl.columns:
                 raise ValueError("no Close column in VIX data")
-            _close_col = _dl["Close"]
-            _close = _close_col.squeeze()
-            # squeeze() on a 1-column DataFrame returns a Series; scalar if single value
-            last_val = _close.iloc[-1] if hasattr(_close, "iloc") else _close
-            if last_val is None:
-                raise ValueError("VIX Close is None")
-            vix = float(last_val)
+            _close = _dl["Close"].dropna()
+            if _close.empty:
+                raise ValueError("VIX Close all NaN")
+            last_val = float(_close.iloc[-1])
+            if last_val <= 0 or math.isnan(last_val):
+                raise ValueError(f"VIX Close invalid: {last_val}")
+            vix = last_val
 
         if vix > CB3_VIX_THRESHOLD:
             reason = f"VIX={vix:.1f} > {CB3_VIX_THRESHOLD}"

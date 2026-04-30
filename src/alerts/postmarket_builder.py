@@ -222,10 +222,15 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         "fills": 0, "exits": 0, "rejects": 0,
     }
     realized = 0.0
+    realized_trades: list[dict] = []
     try:
         from src.db.init_db import get_connection
         conn = get_connection()
         today_start, _ = _today_range()
+        window_start = (
+            datetime.now(timezone.utc) - timedelta(days=7)
+        ).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
         rows = conn.execute(
             "SELECT action, status, fill_price, quantity, notional_usd, broker_order_id"
             " FROM executed_orders WHERE submitted_at >= ?",
@@ -233,12 +238,20 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         ).fetchall()
 
         fills   = sum(1 for r in rows if r["status"] == "FILLED" and r["action"] in ("OPEN_LONG", "OPEN_SHORT"))
-        exits   = sum(1 for r in rows if r["status"] == "FILLED" and r["action"] in ("CLOSE", "SCALE_OUT"))
         rejects = sum(1 for r in rows if r["status"] == "REJECTED")
 
         # Fallback: if reconcile hasn't run yet, count submitted (has broker_order_id)
         if fills == 0:
             fills = sum(1 for r in rows if r["broker_order_id"] and r["action"] in ("OPEN_LONG", "OPEN_SHORT"))
+
+        # Exits: all filled CLOSE/SCALE_OUT in 7-day window (SL/TP hits from prior days)
+        exits_rows = conn.execute(
+            "SELECT COUNT(*) FROM executed_orders"
+            " WHERE submitted_at >= ? AND status = 'FILLED'"
+            "   AND action IN ('CLOSE', 'SCALE_OUT')",
+            (window_start,),
+        ).fetchone()
+        exits = int(exits_rows[0]) if exits_rows else 0
         if exits == 0:
             exits = sum(1 for r in rows if r["broker_order_id"] and r["action"] in ("CLOSE", "SCALE_OUT"))
 
@@ -246,16 +259,17 @@ def _fetch_pnl_summary(adapter=None) -> dict:
         defaults["exits"]   = exits
         defaults["rejects"] = rejects
 
-        # Realized P&L: for each filled CLOSE/SCALE_OUT today, match to most recent OPEN
+        # Realized P&L: all CLOSE/SCALE_OUT fills in 7-day window matched to opens
         close_rows = conn.execute(
             """
-            SELECT ticker, action, fill_price, quantity
+            SELECT ticker, action, fill_price, quantity, submitted_at
             FROM executed_orders
             WHERE submitted_at >= ? AND status = 'FILLED'
               AND action IN ('CLOSE', 'SCALE_OUT')
               AND fill_price IS NOT NULL AND quantity IS NOT NULL
+            ORDER BY submitted_at ASC
             """,
-            (today_start,),
+            (window_start,),
         ).fetchall()
         for row in close_rows:
             open_row = conn.execute(
@@ -263,18 +277,31 @@ def _fetch_pnl_summary(adapter=None) -> dict:
                 SELECT fill_price, action FROM executed_orders
                 WHERE ticker = ? AND action IN ('OPEN_LONG', 'OPEN_SHORT')
                   AND status = 'FILLED' AND fill_price IS NOT NULL
+                  AND submitted_at <= ?
                 ORDER BY submitted_at DESC LIMIT 1
                 """,
-                (row["ticker"],),
+                (row["ticker"], row["submitted_at"]),
             ).fetchone()
             if open_row:
                 close_price = float(row["fill_price"])
                 open_price  = float(open_row["fill_price"])
                 qty         = float(row["quantity"])
-                if open_row["action"] == "OPEN_LONG":
-                    realized += (close_price - open_price) * qty
-                else:
-                    realized += (open_price - close_price) * qty
+                trade_pl = (
+                    (close_price - open_price) * qty
+                    if open_row["action"] == "OPEN_LONG"
+                    else (open_price - close_price) * qty
+                )
+                realized += trade_pl
+                realized_trades.append({
+                    "ticker":       row["ticker"],
+                    "open_price":   open_price,
+                    "close_price":  close_price,
+                    "qty":          int(qty),
+                    "pl":           trade_pl,
+                    "pl_str":       f"${trade_pl:+,.2f}",
+                    "pl_color":     _pl_color(trade_pl),
+                    "date":         (row["submitted_at"] or "")[:10],
+                })
         conn.close()
 
     except Exception as exc:
@@ -314,6 +341,7 @@ def _fetch_pnl_summary(adapter=None) -> dict:
     except Exception as exc:
         logger.warning("[postmarket] Alpaca P&L failed: %s", exc)
 
+    defaults["realized_trades"] = realized_trades
     return defaults
 
 
@@ -340,14 +368,14 @@ def _fetch_anomalies() -> list[str]:
 
 def build_context(adapter=None) -> dict:
     """Assemble the full data context for the post-market template."""
-    # Sync fill status before reading DB — ensures FILLED/fill_price are current
+    # Bidirectional sync: import SL/TP hits from Alpaca + update stale statuses
     try:
-        from src.execution.executor import reconcile_orders
+        from src.execution.executor import sync_from_alpaca
         from src.execution.alpaca_adapter import AlpacaBrokerAdapter
-        _reconcile_adapter = adapter or AlpacaBrokerAdapter()
-        reconcile_orders(_reconcile_adapter)
+        _sync_adapter = adapter or AlpacaBrokerAdapter()
+        sync_from_alpaca(_sync_adapter)
     except Exception as exc:
-        logger.warning("[postmarket] reconcile_orders failed: %s", exc)
+        logger.warning("[postmarket] sync_from_alpaca failed: %s", exc)
 
     summary  = _fetch_pnl_summary(adapter=adapter)
     orders   = _fetch_executed_orders()

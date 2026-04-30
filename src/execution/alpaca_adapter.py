@@ -212,6 +212,10 @@ class AlpacaBrokerAdapter:
         )
         order_class = OrderClass.BRACKET if has_bracket else OrderClass.SIMPLE
 
+        # Bracket legs (TP/SL) must be GTC or they expire at market close
+        if has_bracket:
+            tif = TimeInForce.GTC
+
         kwargs: dict = dict(
             symbol=order.ticker,
             side=side,

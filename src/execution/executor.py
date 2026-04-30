@@ -31,6 +31,135 @@ logger = logging.getLogger(__name__)
 DAILY_ORDER_CAP = int(__import__("os").getenv("ALPACA_DAILY_ORDER_CAP", "20"))
 
 
+def sync_from_alpaca(adapter: "BrokerAdapter") -> int:
+    """
+    Bidirectional sync: import Alpaca-side fills (SL/TP triggers, manual closes)
+    into executed_orders, and update stale DB statuses for pending rows.
+    Returns count of rows inserted or updated.
+    """
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    if not hasattr(adapter, "_client"):
+        return reconcile_orders(adapter)
+
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        from src.db.init_db import (
+            get_connection, insert_executed_order, update_executed_order_status,
+        )
+    except Exception as exc:
+        logger.warning("[sync] import failed: %s", exc)
+        return 0
+
+    try:
+        after = datetime.now(timezone.utc) - timedelta(days=5)
+        alpaca_orders = adapter._client.get_orders(
+            filter=GetOrdersRequest(
+                status=QueryOrderStatus.ALL,
+                limit=200,
+                after=after,
+            )
+        )
+    except Exception as exc:
+        logger.warning("[sync] get_orders failed: %s", exc)
+        return 0
+
+    try:
+        conn = get_connection()
+    except Exception as exc:
+        logger.warning("[sync] get_connection failed: %s", exc)
+        return 0
+
+    known_ids = {
+        r[0]
+        for r in conn.execute(
+            "SELECT broker_order_id FROM executed_orders WHERE broker_order_id IS NOT NULL"
+        ).fetchall()
+    }
+
+    _SIDE_TO_ACTION = {"buy": "OPEN_LONG", "sell": "CLOSE"}
+    _TERMINAL = {"FILLED", "CANCELED", "EXPIRED", "DONE_FOR_DAY", "REJECTED"}
+
+    def _norm(s) -> str:
+        if hasattr(s, "name"):
+            return s.name.upper()
+        return str(s).split(".")[-1].upper()
+
+    changed = 0
+    for o in alpaca_orders:
+        oid = str(o.id)
+        status = _norm(o.status)
+        filled_at_str = o.filled_at.isoformat() if getattr(o, "filled_at", None) else None
+        fill_price = float(o.filled_avg_price) if getattr(o, "filled_avg_price", None) else None
+        filled_qty = float(o.filled_qty) if getattr(o, "filled_qty", None) else None
+
+        if oid in known_ids:
+            if status in _TERMINAL:
+                update_executed_order_status(
+                    conn,
+                    broker_order_id=oid,
+                    status=status,
+                    fill_price=fill_price,
+                    filled_qty=filled_qty,
+                    filled_at=filled_at_str,
+                )
+                changed += 1
+        elif status == "FILLED" and fill_price:
+            side_str = str(getattr(o, "side", "sell")).split(".")[-1].lower()
+            action = _SIDE_TO_ACTION.get(side_str, "CLOSE")
+            ticker = o.symbol
+
+            run_id_row = conn.execute(
+                """
+                SELECT run_id FROM executed_orders
+                WHERE ticker = ? AND action IN ('OPEN_LONG', 'OPEN_SHORT')
+                  AND status = 'FILLED'
+                ORDER BY submitted_at DESC LIMIT 1
+                """,
+                (ticker,),
+            ).fetchone()
+            sync_run_id = (run_id_row[0] if run_id_row and run_id_row[0] else "alpaca-sync")
+
+            submitted_at = (
+                o.submitted_at.isoformat() if getattr(o, "submitted_at", None)
+                else datetime.now(timezone.utc).isoformat()
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO pipeline_runs (run_id, started_at, status, tickers)"
+                " VALUES (?, ?, ?, ?)",
+                ("alpaca-sync", submitted_at, "completed", "[]"),
+            )
+            conn.commit()
+
+            fake_order = SimpleNamespace(
+                ticker=ticker, action=action,
+                quantity=int(filled_qty) if filled_qty else None,
+                notional_usd=None, stop_loss=None, take_profit=None,
+            )
+            fake_result = SimpleNamespace(
+                broker_order_id=oid, status="FILLED",
+                rejection_reason=None, raw_response={},
+            )
+            insert_executed_order(conn, sync_run_id, fake_order, fake_result, submitted_at)
+            conn.execute(
+                "UPDATE executed_orders SET fill_price=?, filled_at=?, filled_qty=?"
+                " WHERE broker_order_id=?",
+                (fill_price, filled_at_str, filled_qty, oid),
+            )
+            conn.commit()
+            changed += 1
+            logger.info(
+                "[sync] imported %s %s broker=%s fill=%.4f",
+                action, ticker, oid[:8], fill_price,
+            )
+
+    conn.close()
+    logger.info("[sync] sync_from_alpaca: %d rows inserted/updated", changed)
+    return changed
+
+
 def reconcile_orders(adapter: "BrokerAdapter") -> int:
     """
     Fetch pending orders from DB, query broker for current status, write updates back.
