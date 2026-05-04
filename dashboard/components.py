@@ -353,33 +353,142 @@ def orders_table(df: pd.DataFrame) -> None:
     )
 
 
+_CLOSE_REASON_LABELS = {
+    "SL_HIT":    "Stop Loss Hit",
+    "TP_HIT":    "Take Profit Hit",
+    "TIME_EXIT": "Time Decay Exit",
+    "MANUAL":    "Manual / Other",
+}
+
+
+def _trade_cards(df: pd.DataFrame) -> None:
+    """Render one st.expander per trade with full detail."""
+    pl_col  = "pl"
+    pct_col = "pl_pct"
+
+    for idx, row in df.iterrows():
+        pl_val  = float(row.get(pl_col)  or 0.0)
+        pct_val = float(row.get(pct_col) or 0.0)
+        ticker  = str(row.get("ticker") or "?")
+        entry_d = str(row.get("entry_date") or "")[:19]
+        exit_d  = str(row.get("exit_date")  or "")[:19]
+        is_win  = pl_val >= 0
+        badge   = "WIN ✅" if is_win else "LOSS ❌"
+        color   = COLOR_POSITIVE if is_win else COLOR_NEGATIVE
+        pl_str  = fmt_usd(pl_val, 2)
+        pct_str = fmt_pct(pct_val, 2, signed=True)
+        header  = f"{badge}  {ticker}  |  {pl_str} ({pct_str})  |  {entry_d} → {exit_d}"
+
+        with st.expander(header, expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(
+                    f"<div style='font-family:JetBrains Mono,monospace;font-size:12px;"
+                    f"color:{COLOR_MUTED};'>"
+                    f"<b style='color:{COLOR_FG};'>Entry</b><br>"
+                    f"Date &nbsp;&nbsp;: {entry_d}<br>"
+                    f"Price : {fmt_usd(row.get('entry_price'), 2)}<br>"
+                    f"Qty &nbsp;&nbsp;: {fmt_int(row.get('quantity'))}<br>"
+                    f"Side &nbsp;&nbsp;: {str(row.get('side') or '—').upper()}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                reason_raw = str(row.get("close_reason") or "MANUAL")
+                reason_lbl = _CLOSE_REASON_LABELS.get(reason_raw, reason_raw)
+                st.markdown(
+                    f"<div style='font-family:JetBrains Mono,monospace;font-size:12px;"
+                    f"color:{COLOR_MUTED};'>"
+                    f"<b style='color:{COLOR_FG};'>Exit</b><br>"
+                    f"Date &nbsp;&nbsp;: {exit_d}<br>"
+                    f"Price : {fmt_usd(row.get('exit_price'), 2)}<br>"
+                    f"Reason: {reason_lbl}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # SL / TP details
+            sl = row.get("stop_loss")
+            tp = row.get("take_profit")
+            ep = row.get("entry_price")
+            if sl is not None or tp is not None:
+                sl_dist = ((float(ep) - float(sl)) / float(ep) * 100.0
+                           if sl is not None and ep else None)
+                tp_dist = ((float(tp) - float(ep)) / float(ep) * 100.0
+                           if tp is not None and ep else None)
+                st.markdown(
+                    f"<div style='font-family:JetBrains Mono,monospace;font-size:12px;"
+                    f"color:{COLOR_MUTED};margin-top:6px;'>"
+                    f"SL: {fmt_usd(sl, 2) if sl else '—'}"
+                    f"{'  (−' + fmt_pct(sl_dist,1) + ' from entry)' if sl_dist else ''}"
+                    f" &nbsp;·&nbsp; "
+                    f"TP: {fmt_usd(tp, 2) if tp else '—'}"
+                    f"{'  (+' + fmt_pct(tp_dist,1) + ' from entry)' if tp_dist else ''}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            agents = row.get("top_agents") or []
+            if agents:
+                st.markdown(
+                    f"<div style='font-family:JetBrains Mono,monospace;font-size:11px;"
+                    f"color:{COLOR_MUTED};margin-top:4px;'>"
+                    f"Top agents: {', '.join(str(a) for a in agents[:5])}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                f"<div style='font-family:JetBrains Mono,monospace;font-size:14px;"
+                f"font-weight:700;color:{color};margin-top:6px;'>"
+                f"P&L: {pl_str} ({pct_str})"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+
 def trade_history_table(df: pd.DataFrame) -> None:
-    """Closed trades — FIFO-paired realized P&L."""
+    """Closed trades with toggle between card view and table view."""
     if df is None or df.empty:
-        empty_placeholder("No closed trades in window.")
+        st.info("Nessun trade chiuso nel periodo selezionato.")
         return
 
-    view = df.copy()
-    pl_raw  = pd.to_numeric(view.get("realized_pl",  pd.Series()), errors="coerce")
-    pct_raw = pd.to_numeric(view.get("realized_pct", pd.Series()), errors="coerce")
+    view_mode = st.radio(
+        "Vista",
+        options=("Cards", "Tabella"),
+        index=0,
+        horizontal=True,
+        key="trade_history_view_mode",
+        label_visibility="collapsed",
+    )
 
-    if "qty"          in view: view["qty"]          = view["qty"].map(lambda v: fmt_int(v))
-    if "entry_price"  in view: view["entry_price"]  = view["entry_price"].map(lambda v: fmt_usd(v, 2))
-    if "exit_price"   in view: view["exit_price"]   = view["exit_price"].map(lambda v: fmt_usd(v, 2))
-    if "realized_pl"  in view: view["realized_pl"]  = view["realized_pl"].map(lambda v: fmt_usd(v, 2))
-    if "realized_pct" in view: view["realized_pct"] = view["realized_pct"].map(lambda v: fmt_pct(v, 2, signed=True))
-    if "opened_at"    in view: view["opened_at"]    = view["opened_at"].astype(str).str.slice(0, 19)
-    if "closed_at"    in view: view["closed_at"]    = view["closed_at"].astype(str).str.slice(0, 19)
-    if "tag"          in view: view["tag"]          = view["tag"].fillna("—")
+    if view_mode == "Cards":
+        _trade_cards(df)
+        return
+
+    # ── Table view ────────────────────────────────────────────────────────────
+    view = df.copy()
+    pl_raw  = pd.to_numeric(view.get("pl",     pd.Series()), errors="coerce")
+    pct_raw = pd.to_numeric(view.get("pl_pct", pd.Series()), errors="coerce")
+
+    if "quantity"    in view: view["quantity"]    = view["quantity"].map(lambda v: fmt_int(v))
+    if "entry_price" in view: view["entry_price"] = view["entry_price"].map(lambda v: fmt_usd(v, 2))
+    if "exit_price"  in view: view["exit_price"]  = view["exit_price"].map(lambda v: fmt_usd(v, 2))
+    if "stop_loss"   in view: view["stop_loss"]   = view["stop_loss"].map(lambda v: fmt_usd(v, 2) if v is not None else "—")
+    if "take_profit" in view: view["take_profit"] = view["take_profit"].map(lambda v: fmt_usd(v, 2) if v is not None else "—")
+    if "pl"          in view: view["pl"]          = view["pl"].map(lambda v: fmt_usd(v, 2))
+    if "pl_pct"      in view: view["pl_pct"]      = view["pl_pct"].map(lambda v: fmt_pct(v, 2, signed=True))
+    if "entry_date"  in view: view["entry_date"]  = view["entry_date"].astype(str).str.slice(0, 19)
+    if "exit_date"   in view: view["exit_date"]   = view["exit_date"].astype(str).str.slice(0, 19)
+    if "top_agents"  in view: view = view.drop(columns=["top_agents"])
 
     def _style_row(row):
         styles = [""] * len(row)
-        if "realized_pl" in row.index:
-            i = list(row.index).index("realized_pl")
-            styles[i] = _color_pl(pl_raw.get(row.name))
-        if "realized_pct" in row.index:
-            i = list(row.index).index("realized_pct")
-            styles[i] = _color_pl(pct_raw.get(row.name))
+        cols = list(row.index)
+        if "pl" in cols:
+            styles[cols.index("pl")] = _color_pl(pl_raw.get(row.name))
+        if "pl_pct" in cols:
+            styles[cols.index("pl_pct")] = _color_pl(pct_raw.get(row.name))
         return styles
 
     styled = view.style.apply(_style_row, axis=1).set_properties(

@@ -436,10 +436,146 @@ def get_open_orders() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=TTL_DISK, show_spinner=False)
+def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
+    """Complete trade history via SQLite LEFT JOIN pairing. Returns rich columns."""
+    _COLS = ["ticker","entry_date","exit_date","pl","pl_pct","quantity",
+             "entry_price","exit_price","side","close_reason","stop_loss","take_profit","top_agents"]
+    try:
+        df = _sql(
+            """
+            SELECT
+                o1.ticker,
+                o1.action          AS open_action,
+                o1.fill_price      AS entry_price,
+                o1.quantity,
+                o1.filled_at       AS entry_date,
+                o1.stop_loss,
+                o1.take_profit,
+                o2.fill_price      AS exit_price,
+                o2.filled_at       AS exit_date,
+                o2.action          AS close_action,
+                o2.broker_order_id AS close_order_id
+            FROM executed_orders o1
+            LEFT JOIN executed_orders o2
+                ON  o2.ticker = o1.ticker
+                AND o2.action IN ('CLOSE','SELL','EXIT')
+                AND datetime(o2.filled_at) > datetime(o1.filled_at)
+            WHERE o1.action IN ('OPEN_LONG','OPEN_SHORT')
+              AND o1.status IN ('FILLED','PARTIAL_FILLED')
+              AND datetime(o1.filled_at) >= datetime('now', '-{days} day')
+            ORDER BY o1.filled_at DESC
+            """.format(days=int(days)),
+        )
+        if df.empty:
+            return pd.DataFrame(columns=_COLS)
+
+        ticks = _sql(
+            """
+            SELECT ticker, timestamp, reason, broker_order_id
+              FROM monitor_ticks
+             WHERE action_taken = 1
+               AND datetime(timestamp) >= datetime('now', '-{days} day')
+            """.format(days=int(days)),
+        )
+        tick_by_order: dict[str, str] = {}
+        tick_by_ticker: list[dict] = []
+        if not ticks.empty:
+            ticks["timestamp"] = pd.to_datetime(ticks["timestamp"], errors="coerce", utc=True)
+            for _, t in ticks.iterrows():
+                oid = t.get("broker_order_id")
+                if oid:
+                    tick_by_order[str(oid)] = str(t.get("reason") or "")
+                tick_by_ticker.append({
+                    "ticker": t["ticker"],
+                    "ts":     t["timestamp"],
+                    "reason": str(t.get("reason") or ""),
+                })
+
+        rows: list[dict] = []
+        seen: set[tuple] = set()
+        for _, r in df.iterrows():
+            exit_px_raw = r.get("exit_price")
+            if exit_px_raw is None or pd.isna(exit_px_raw):
+                continue
+            entry_px  = float(r["entry_price"] or 0.0)
+            exit_px   = float(exit_px_raw)
+            qty       = float(r["quantity"] or 0.0)
+            sl_f      = float(r["stop_loss"])   if r.get("stop_loss")   is not None and not pd.isna(r["stop_loss"])   else None
+            tp_f      = float(r["take_profit"]) if r.get("take_profit") is not None and not pd.isna(r["take_profit"]) else None
+            side      = "long" if str(r.get("open_action","")).upper() == "OPEN_LONG" else "short"
+            ticker    = str(r["ticker"])
+            entry_date = r.get("entry_date")
+            exit_date  = r.get("exit_date")
+
+            key = (ticker, str(entry_date), str(exit_date))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            pl     = (exit_px - entry_px) * qty if side == "long" else (entry_px - exit_px) * qty
+            pl_pct = (pl / (entry_px * qty) * 100.0) if entry_px and qty else 0.0
+
+            close_reason = "MANUAL"
+            close_oid    = str(r.get("close_order_id") or "")
+            if close_oid and close_oid in tick_by_order:
+                if "time" in tick_by_order[close_oid].lower():
+                    close_reason = "TIME_EXIT"
+            elif exit_date and tick_by_ticker:
+                exit_ts = pd.to_datetime(exit_date, errors="coerce", utc=True)
+                if exit_ts is not None and not pd.isna(exit_ts):
+                    best_dt: Optional[float] = None
+                    best_reason = ""
+                    for t in tick_by_ticker:
+                        if t["ticker"] != ticker:
+                            continue
+                        dt = abs((t["ts"] - exit_ts).total_seconds())
+                        if dt < 600 and (best_dt is None or dt < best_dt):
+                            best_dt, best_reason = dt, t["reason"].lower()
+                    if "time" in best_reason:
+                        close_reason = "TIME_EXIT"
+
+            if close_reason not in ("TIME_EXIT",):
+                if sl_f is not None:
+                    if (side == "long"  and exit_px <= sl_f) or \
+                       (side == "short" and exit_px >= sl_f):
+                        close_reason = "SL_HIT"
+                if tp_f is not None and close_reason != "SL_HIT":
+                    if (side == "long"  and exit_px >= tp_f) or \
+                       (side == "short" and exit_px <= tp_f):
+                        close_reason = "TP_HIT"
+
+            rows.append({
+                "ticker":       ticker,
+                "entry_date":   entry_date,
+                "exit_date":    exit_date,
+                "pl":           pl,
+                "pl_pct":       pl_pct,
+                "quantity":     qty,
+                "entry_price":  entry_px,
+                "exit_price":   exit_px,
+                "side":         side,
+                "close_reason": close_reason,
+                "stop_loss":    sl_f,
+                "take_profit":  tp_f,
+                "top_agents":   [],
+            })
+
+        return pd.DataFrame(rows, columns=_COLS) if rows else pd.DataFrame(columns=_COLS)
+    except Exception as exc:
+        log.warning("get_trade_history_alpaca failed: %s", exc)
+        return pd.DataFrame(columns=_COLS)
+
+
+@st.cache_data(ttl=TTL_DISK, show_spinner=False)
 def get_trade_history(days: int = 30) -> pd.DataFrame:
-    """Realised trades — pair OPEN→CLOSE on each ticker (FIFO), compute PnL.
-       top_agents stays empty for v1; Tab-3 will join attribution later."""
-    cols = ["ticker","entry_date","exit_date","pl","pl_pct","top_agents"]
+    """Realised trades. Primary: LEFT JOIN pairing. Fallback: FIFO matching."""
+    result = get_trade_history_alpaca(days=days)
+    if not result.empty:
+        return result
+
+    # Fallback — minimal FIFO matching (legacy)
+    cols = ["ticker","entry_date","exit_date","pl","pl_pct","quantity",
+            "entry_price","exit_price","side","close_reason","stop_loss","take_profit","top_agents"]
     df = _sql(
         """
         SELECT ticker, action, fill_price, quantity, filled_at
@@ -471,19 +607,105 @@ def get_trade_history(days: int = 30) -> pd.DataFrame:
             if not stack:
                 continue
             entry = stack.pop(0)
-            pnl = ((px - entry["px"]) if entry["side"] == "OPEN_LONG"
-                   else (entry["px"] - px)) * min(qty, entry["qty"])
+            pnl    = ((px - entry["px"]) if entry["side"] == "OPEN_LONG"
+                      else (entry["px"] - px)) * min(qty, entry["qty"])
             pl_pct = (pnl / (entry["px"] * entry["qty"])) * 100.0 if entry["px"] and entry["qty"] else 0.0
+            side   = "long" if entry["side"] == "OPEN_LONG" else "short"
             closed.append({
-                "ticker":     tk,
-                "entry_date": entry["ts"],
-                "exit_date":  ts,
-                "pl":         pnl,
-                "pl_pct":     pl_pct,
-                "top_agents": [],
+                "ticker":       tk,
+                "entry_date":   entry["ts"],
+                "exit_date":    ts,
+                "pl":           pnl,
+                "pl_pct":       pl_pct,
+                "quantity":     entry["qty"],
+                "entry_price":  entry["px"],
+                "exit_price":   px,
+                "side":         side,
+                "close_reason": "MANUAL",
+                "stop_loss":    None,
+                "take_profit":  None,
+                "top_agents":   [],
             })
 
     return pd.DataFrame(closed, columns=cols)
+
+
+def get_trade_stats(df: pd.DataFrame) -> dict:
+    """Compute advanced statistics from a trade history DataFrame."""
+    empty: dict = {
+        "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
+        "win_rate": None, "total_pl": 0.0, "avg_pl_per_trade": None,
+        "avg_win": None, "avg_loss": None, "profit_factor": None,
+        "max_win_streak": 0, "max_loss_streak": 0,
+        "best_trade": None, "worst_trade": None,
+        "stats_by_ticker": {},
+    }
+    if df is None or df.empty or "pl" not in df.columns:
+        return empty
+
+    pl      = pd.to_numeric(df["pl"], errors="coerce").fillna(0.0)
+    tickers = df.get("ticker", pd.Series(dtype=str))
+
+    wins   = pl[pl > 0]
+    losses = pl[pl < 0]
+    total  = len(pl)
+    n_win  = int(len(wins))
+    n_loss = int(len(losses))
+
+    max_win = max_loss = cur_win = cur_loss = 0
+    for v in pl:
+        if v > 0:
+            cur_win += 1; cur_loss = 0
+            max_win = max(max_win, cur_win)
+        elif v < 0:
+            cur_loss += 1; cur_win = 0
+            max_loss = max(max_loss, cur_loss)
+        else:
+            cur_win = cur_loss = 0
+
+    best_trade: Optional[dict]  = None
+    worst_trade: Optional[dict] = None
+    if total > 0:
+        best_idx  = int(pl.reset_index(drop=True).idxmax())
+        worst_idx = int(pl.reset_index(drop=True).idxmin())
+        tks = tickers.reset_index(drop=True)
+        best_trade  = {"ticker": str(tks.iloc[best_idx])  if len(tks) > best_idx  else "?",
+                       "pl":     float(pl.iloc[best_idx])}
+        worst_trade = {"ticker": str(tks.iloc[worst_idx]) if len(tks) > worst_idx else "?",
+                       "pl":     float(pl.iloc[worst_idx])}
+
+    stats_by_ticker: dict[str, dict] = {}
+    if not tickers.empty:
+        tmp = pd.DataFrame({"ticker": tickers.values, "pl": pl.values})
+        for tkr, grp in tmp.groupby("ticker"):
+            n = len(grp)
+            w = int((grp["pl"] > 0).sum())
+            stats_by_ticker[str(tkr)] = {
+                "n":        n,
+                "win_rate": float(w / n * 100.0) if n > 0 else None,
+                "total_pl": float(grp["pl"].sum()),
+            }
+        stats_by_ticker = dict(
+            sorted(stats_by_ticker.items(), key=lambda x: x[1]["total_pl"], reverse=True)
+        )
+
+    return {
+        "total_trades":    total,
+        "winning_trades":  n_win,
+        "losing_trades":   n_loss,
+        "win_rate":        float(n_win / total * 100.0) if total > 0 else None,
+        "total_pl":        float(pl.sum()),
+        "avg_pl_per_trade": float(pl.mean()) if total > 0 else None,
+        "avg_win":         float(wins.mean()) if n_win  > 0 else None,
+        "avg_loss":        float(losses.mean()) if n_loss > 0 else None,
+        "profit_factor":   (float(wins.sum()) / float(abs(losses.sum())))
+                           if n_loss > 0 and losses.sum() != 0 else None,
+        "max_win_streak":  max_win,
+        "max_loss_streak": max_loss,
+        "best_trade":      best_trade,
+        "worst_trade":     worst_trade,
+        "stats_by_ticker": stats_by_ticker,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
