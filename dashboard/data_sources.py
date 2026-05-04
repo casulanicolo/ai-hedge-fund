@@ -435,12 +435,76 @@ def get_open_orders() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+_RULE_LABELS: dict[str, str] = {
+    "time_decay":         "⏱ Time Decay",
+    "trailing_breakeven": "📈 Trailing Stop",
+    "trailing_1x":        "📈 Trailing Stop",
+    "trailing_1_5x":      "📈 Trailing Stop",
+    "stop_loss":          "🛑 Stop Loss",
+    "setup_broken_rsi":   "🛑 Setup Broken",
+    "take_profit":        "🎯 Take Profit",
+    "hold":               "— Hold",
+}
+
+
+def _reconcile_pending_closes() -> None:
+    """For each CLOSE in PENDING_NEW, fetch real status from Alpaca and update DB."""
+    if not DB_PATH.exists():
+        return
+    try:
+        with sqlite3.connect(DB_PATH) as con:
+            pending = pd.read_sql_query(
+                """SELECT id, broker_order_id, ticker FROM executed_orders
+                   WHERE action = 'CLOSE' AND status = 'PENDING_NEW'
+                     AND broker_order_id IS NOT NULL""",
+                con,
+            )
+        if pending.empty:
+            return
+        broker = get_broker()
+        if broker is None:
+            return
+        for _, row in pending.iterrows():
+            try:
+                order = broker._client.get_order_by_id(row["broker_order_id"])
+                status_raw = str(order.status).upper()
+                if "FILLED" in status_raw and "PARTIAL" not in status_raw:
+                    our_status = "FILLED"
+                elif "PARTIAL" in status_raw:
+                    our_status = "PARTIAL_FILLED"
+                elif "CANCEL" in status_raw:
+                    our_status = "CANCELLED"
+                elif "EXPIRED" in status_raw:
+                    our_status = "EXPIRED"
+                else:
+                    continue
+                fill_price = float(order.filled_avg_price or 0) or None
+                filled_at  = str(order.filled_at) if order.filled_at else None
+                filled_qty = float(order.filled_qty or 0) or None
+                with sqlite3.connect(DB_PATH) as con:
+                    con.execute(
+                        """UPDATE executed_orders
+                              SET status    = ?,
+                                  fill_price = ?,
+                                  filled_at  = ?,
+                                  quantity   = COALESCE(?, quantity)
+                            WHERE id = ?""",
+                        (our_status, fill_price, filled_at, filled_qty, row["id"]),
+                    )
+            except Exception as exc:
+                log.warning("reconcile order %s failed: %s", row.get("broker_order_id"), exc)
+    except Exception as exc:
+        log.warning("_reconcile_pending_closes failed: %s", exc)
+
+
 @st.cache_data(ttl=TTL_DISK, show_spinner=False)
 def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
     """Complete trade history via SQLite LEFT JOIN pairing. Returns rich columns."""
     _COLS = ["ticker","entry_date","exit_date","pl","pl_pct","quantity",
              "entry_price","exit_price","side","close_reason","stop_loss","take_profit","top_agents"]
     try:
+        _reconcile_pending_closes()
+
         df = _sql(
             """
             SELECT
@@ -459,6 +523,7 @@ def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
             LEFT JOIN executed_orders o2
                 ON  o2.ticker = o1.ticker
                 AND o2.action IN ('CLOSE','SELL','EXIT')
+                AND o2.status IN ('FILLED','PARTIAL_FILLED')
                 AND datetime(o2.filled_at) > datetime(o1.filled_at)
             WHERE o1.action IN ('OPEN_LONG','OPEN_SHORT')
               AND o1.status IN ('FILLED','PARTIAL_FILLED')
@@ -469,27 +534,26 @@ def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame(columns=_COLS)
 
-        ticks = _sql(
+        # Load all actionable monitor_ticks for close_reason lookup
+        close_reasons_df = _sql(
             """
-            SELECT ticker, timestamp, reason, broker_order_id
+            SELECT ticker, timestamp, rule, reason
               FROM monitor_ticks
              WHERE action_taken = 1
-               AND datetime(timestamp) >= datetime('now', '-{days} day')
-            """.format(days=int(days)),
+             ORDER BY timestamp DESC
+            """,
         )
-        tick_by_order: dict[str, str] = {}
-        tick_by_ticker: list[dict] = []
-        if not ticks.empty:
-            ticks["timestamp"] = pd.to_datetime(ticks["timestamp"], errors="coerce", utc=True)
-            for _, t in ticks.iterrows():
-                oid = t.get("broker_order_id")
-                if oid:
-                    tick_by_order[str(oid)] = str(t.get("reason") or "")
-                tick_by_ticker.append({
-                    "ticker": t["ticker"],
-                    "ts":     t["timestamp"],
-                    "reason": str(t.get("reason") or ""),
-                })
+        # Build per-ticker list of (ts, rule) sorted descending for fast lookup
+        ticks_by_ticker: dict[str, list[tuple]] = {}
+        if not close_reasons_df.empty:
+            close_reasons_df["_ts"] = pd.to_datetime(
+                close_reasons_df["timestamp"], errors="coerce", utc=True
+            )
+            for _, t in close_reasons_df.dropna(subset=["_ts"]).iterrows():
+                tkr = str(t["ticker"])
+                ticks_by_ticker.setdefault(tkr, []).append(
+                    (t["_ts"], str(t.get("rule") or ""))
+                )
 
         rows: list[dict] = []
         seen: set[tuple] = set()
@@ -497,13 +561,13 @@ def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
             exit_px_raw = r.get("exit_price")
             if exit_px_raw is None or pd.isna(exit_px_raw):
                 continue
-            entry_px  = float(r["entry_price"] or 0.0)
-            exit_px   = float(exit_px_raw)
-            qty       = float(r["quantity"] or 0.0)
-            sl_f      = float(r["stop_loss"])   if r.get("stop_loss")   is not None and not pd.isna(r["stop_loss"])   else None
-            tp_f      = float(r["take_profit"]) if r.get("take_profit") is not None and not pd.isna(r["take_profit"]) else None
-            side      = "long" if str(r.get("open_action","")).upper() == "OPEN_LONG" else "short"
-            ticker    = str(r["ticker"])
+            entry_px   = float(r["entry_price"] or 0.0)
+            exit_px    = float(exit_px_raw)
+            qty        = float(r["quantity"] or 0.0)
+            sl_f       = float(r["stop_loss"])   if r.get("stop_loss")   is not None and not pd.isna(r["stop_loss"])   else None
+            tp_f       = float(r["take_profit"]) if r.get("take_profit") is not None and not pd.isna(r["take_profit"]) else None
+            side       = "long" if str(r.get("open_action","")).upper() == "OPEN_LONG" else "short"
+            ticker     = str(r["ticker"])
             entry_date = r.get("entry_date")
             exit_date  = r.get("exit_date")
 
@@ -515,34 +579,29 @@ def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
             pl     = (exit_px - entry_px) * qty if side == "long" else (entry_px - exit_px) * qty
             pl_pct = (pl / (entry_px * qty) * 100.0) if entry_px and qty else 0.0
 
-            close_reason = "MANUAL"
-            close_oid    = str(r.get("close_order_id") or "")
-            if close_oid and close_oid in tick_by_order:
-                if "time" in tick_by_order[close_oid].lower():
-                    close_reason = "TIME_EXIT"
-            elif exit_date and tick_by_ticker:
-                exit_ts = pd.to_datetime(exit_date, errors="coerce", utc=True)
-                if exit_ts is not None and not pd.isna(exit_ts):
-                    best_dt: Optional[float] = None
-                    best_reason = ""
-                    for t in tick_by_ticker:
-                        if t["ticker"] != ticker:
-                            continue
-                        dt = abs((t["ts"] - exit_ts).total_seconds())
-                        if dt < 600 and (best_dt is None or dt < best_dt):
-                            best_dt, best_reason = dt, t["reason"].lower()
-                    if "time" in best_reason:
-                        close_reason = "TIME_EXIT"
+            # Determine close_reason from monitor_ticks.rule
+            close_reason = "—"
+            exit_ts = pd.to_datetime(exit_date, errors="coerce", utc=True) if exit_date else None
+            if exit_ts is not None and not pd.isna(exit_ts) and ticker in ticks_by_ticker:
+                best_dt: Optional[float] = None
+                best_rule = ""
+                for ts, rule in ticks_by_ticker[ticker]:
+                    diff = (exit_ts - ts).total_seconds()
+                    if 0 <= diff <= 600 and (best_dt is None or diff < best_dt):
+                        best_dt, best_rule = diff, rule
+                if best_rule:
+                    close_reason = _RULE_LABELS.get(best_rule, best_rule.replace("_", " ").title())
 
-            if close_reason not in ("TIME_EXIT",):
+            # Fallback heuristics when no matching tick found
+            if close_reason == "—":
                 if sl_f is not None:
                     if (side == "long"  and exit_px <= sl_f) or \
                        (side == "short" and exit_px >= sl_f):
-                        close_reason = "SL_HIT"
-                if tp_f is not None and close_reason != "SL_HIT":
+                        close_reason = "🛑 Stop Loss"
+                if close_reason == "—" and tp_f is not None:
                     if (side == "long"  and exit_px >= tp_f) or \
                        (side == "short" and exit_px <= tp_f):
-                        close_reason = "TP_HIT"
+                        close_reason = "🎯 Take Profit"
 
             rows.append({
                 "ticker":       ticker,
