@@ -156,6 +156,36 @@ def _log_tick_to_db(tick) -> None:
 # Position enrichment
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _trading_days_since(opened_at: "datetime") -> float:
+    """Count trading days (Mon-Fri) between opened_at and now UTC.
+    Returns a float: integer part = full trading days elapsed,
+    decimal part = fraction of current trading day elapsed.
+    Weekend days count as 0.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    if now <= opened_at:
+        return 0.0
+    start_date = opened_at.date()
+    end_date   = now.date()
+    trading_days = 0
+    current = start_date
+    while current < end_date:
+        if current.weekday() < 5:
+            trading_days += 1
+        current += timedelta(days=1)
+    if now.date().weekday() < 5:
+        market_open_utc  = now.replace(hour=14, minute=30, second=0, microsecond=0)
+        market_close_utc = now.replace(hour=21, minute=0,  second=0, microsecond=0)
+        if now >= market_open_utc:
+            elapsed = min(
+                (now - market_open_utc).total_seconds(),
+                (market_close_utc - market_open_utc).total_seconds(),
+            )
+            trading_days += elapsed / (6.5 * 3600)
+    return float(trading_days)
+
+
 def _enrich_position(raw_pos, current_price: float) -> "EnrichedPosition":
     from src.monitor.monitor_state import EnrichedPosition
 
@@ -167,7 +197,7 @@ def _enrich_position(raw_pos, current_price: float) -> "EnrichedPosition":
         try:
             from datetime import datetime, timezone
             opened_at = datetime.fromisoformat(db_data["opened_at"].replace("Z", "+00:00"))
-            days_open = (datetime.now(timezone.utc) - opened_at).total_seconds() / 86400.0
+            days_open = _trading_days_since(opened_at)
         except Exception:
             pass
 
