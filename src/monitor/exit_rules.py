@@ -74,7 +74,7 @@ def evaluate_trailing_stop(
     price      = pos.effective_price()
     entry      = pos.avg_entry_price
     current_sl = pos.stop_loss
-    is_long    = pos.side == "long"
+    is_long    = pos.side.lower().endswith("long")
 
     profit = (price - entry) if is_long else (entry - price)
     profit_in_atr = profit / atr
@@ -135,7 +135,7 @@ def evaluate_partial_profit_take(
     if atr <= 0:
         return None
 
-    is_long = pos.side == "long"
+    is_long = pos.side.lower().endswith("long")
     profit  = (current_price - entry) if is_long else (entry - current_price)
     profit_in_atr = profit / atr
 
@@ -181,7 +181,7 @@ def evaluate_setup_broken(
     if "close" not in df.columns:
         return None
 
-    is_long = pos.side == "long"
+    is_long = pos.side.lower().endswith("long")
 
     # ── RSI inversion check ───────────────────────────────────────────────────
     try:

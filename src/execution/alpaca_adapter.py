@@ -273,7 +273,7 @@ class AlpacaBrokerAdapter:
                 market_value=float(p.market_value),
                 avg_entry_price=float(p.avg_entry_price),
                 unrealized_pl=float(p.unrealized_pl),
-                side=str(p.side),
+                side=str(p.side).split(".")[-1].lower(),
             )
             for p in positions
         ]

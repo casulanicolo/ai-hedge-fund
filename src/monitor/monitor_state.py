@@ -57,9 +57,9 @@ class EnrichedPosition(PositionSnapshot):
         return self.avg_entry_price
 
     def profit_dollars(self) -> float:
-        sign = 1.0 if self.side == "long" else -1.0
+        sign = 1.0 if self.side.lower().endswith("long") else -1.0
         return sign * (self.effective_price() - self.avg_entry_price) * abs(self.qty)
 
     def profit_per_share(self) -> float:
-        sign = 1.0 if self.side == "long" else -1.0
+        sign = 1.0 if self.side.lower().endswith("long") else -1.0
         return sign * (self.effective_price() - self.avg_entry_price)
