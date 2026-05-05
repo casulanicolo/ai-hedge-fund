@@ -305,12 +305,13 @@ def positions_table(df: pd.DataFrame) -> None:
         return
 
     view = df.copy()
-    # Pretty-format columns the styler will render as strings
     if "qty"            in view: view["qty"]            = view["qty"].map(lambda v: fmt_int(v))
     if "entry"          in view: view["entry"]          = view["entry"].map(lambda v: fmt_usd(v, 2))
     if "mark"           in view: view["mark"]           = view["mark"].map(lambda v: fmt_usd(v, 2))
     if "unrealized_pl"  in view: view["unrealized_pl"]  = view["unrealized_pl"].map(lambda v: fmt_usd(v, 2))
     if "unrealized_pct" in view: view["unrealized_pct"] = view["unrealized_pct"].map(lambda v: fmt_pct(v, 2, signed=True))
+    if "stop_loss"      in view: view["stop_loss"]      = view["stop_loss"].map(lambda v: fmt_usd(v, 2) if v is not None else "—")
+    if "take_profit"    in view: view["take_profit"]    = view["take_profit"].map(lambda v: fmt_usd(v, 2) if v is not None else "—")
     if "dist_sl"        in view: view["dist_sl"]        = view["dist_sl"].map(lambda v: fmt_pct(v, 2, signed=True) if v is not None else "—")
     if "dist_tp"        in view: view["dist_tp"]        = view["dist_tp"].map(lambda v: fmt_pct(v, 2, signed=True) if v is not None else "—")
     if "days_held"      in view: view["days_held"]      = view["days_held"].map(lambda v: fmt_int(v) if v is not None else "—")

@@ -317,6 +317,21 @@ def get_exposure_breakdown() -> dict:
 # TAB 2 — POSITIONS & ORDERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _count_trading_days(start: datetime, end: datetime) -> int:
+    """Count Mon-Fri days between start and end (exclusive of end date). Stdlib only."""
+    from datetime import timedelta
+    if end <= start:
+        return 0
+    days = 0
+    current = start.date()
+    end_date = end.date()
+    while current < end_date:
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return days
+
+
 def _latest_open_order_row(ticker: str) -> dict:
     """Most recent OPEN_LONG/OPEN_SHORT FILLED row for a ticker (for SL/TP/days)."""
     df = _sql(
@@ -341,7 +356,7 @@ def _latest_open_order_row(ticker: str) -> dict:
 def get_positions() -> pd.DataFrame:
     """Live positions enriched with SL/TP/tag/days_held from executed_orders."""
     cols = ["ticker","side","qty","entry","mark","unrealized_pl",
-            "unrealized_pct","days_held","dist_sl","dist_tp","tag"]
+            "unrealized_pct","days_held","stop_loss","take_profit","dist_sl","dist_tp","tag"]
     broker = get_broker()
     if broker is None:
         return pd.DataFrame(columns=cols)
@@ -360,17 +375,45 @@ def get_positions() -> pd.DataFrame:
         unr_pl    = float(p.unrealized_pl)
         unr_pct   = (unr_pl / (entry * abs(qty))) * 100.0 if entry and qty else 0.0
         meta      = _latest_open_order_row(p.ticker)
-        sl        = meta.get("stop_loss")
-        tp        = meta.get("take_profit")
         filled_at = meta.get("filled_at")
-        days_held = None
+
+        # Parse SL/TP — guard against strings or None
+        sl: Optional[float] = None
+        tp: Optional[float] = None
+        try:
+            raw_sl = meta.get("stop_loss")
+            if raw_sl is not None:
+                sl = float(raw_sl)
+        except (TypeError, ValueError):
+            pass
+        try:
+            raw_tp = meta.get("take_profit")
+            if raw_tp is not None:
+                tp = float(raw_tp)
+        except (TypeError, ValueError):
+            pass
+
+        days_held: Optional[int] = None
         if filled_at:
             try:
-                days_held = max(0, (now_utc - pd.to_datetime(filled_at, utc=True)).days)
+                opened_dt = pd.to_datetime(filled_at, utc=True).to_pydatetime()
+                days_held = _count_trading_days(opened_dt, now_utc)
             except Exception:
                 days_held = None
-        dist_sl = ((mark - sl) / mark * 100.0) if (sl and mark) else None
-        dist_tp = ((tp - mark) / mark * 100.0) if (tp and mark) else None
+
+        dist_sl: Optional[float] = None
+        dist_tp: Optional[float] = None
+        if sl is not None and mark:
+            try:
+                dist_sl = (mark - sl) / mark * 100.0
+            except (ZeroDivisionError, TypeError):
+                pass
+        if tp is not None and mark:
+            try:
+                dist_tp = (tp - mark) / mark * 100.0
+            except (ZeroDivisionError, TypeError):
+                pass
+
         rows.append({
             "ticker":         p.ticker,
             "side":           p.side.upper(),
@@ -380,6 +423,8 @@ def get_positions() -> pd.DataFrame:
             "unrealized_pl":  unr_pl,
             "unrealized_pct": unr_pct,
             "days_held":      days_held,
+            "stop_loss":      sl,
+            "take_profit":    tp,
             "dist_sl":        dist_sl,
             "dist_tp":        dist_tp,
             "tag":            meta.get("run_id", "")[:8] if meta else "",

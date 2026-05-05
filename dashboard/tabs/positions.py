@@ -58,12 +58,15 @@ def _render_trade_stats(stats: dict, c) -> None:
     best   = stats.get("best_trade")
     worst  = stats.get("worst_trade")
 
+    def _no_dollar(s: str) -> str:
+        return s.replace("$", "USD ")
+
     st.caption(
-        f"Trades: {total} ({n_win}W / {n_loss}L)  ·  "
-        f"Max streak: {mws}W / {mls}L  ·  "
-        f"Total P&L: {c.fmt_usd(tpl, 2)}  ·  "
-        + (f"Best: {best['ticker']} {c.fmt_usd(best['pl'], 2)}  ·  " if best else "")
-        + (f"Worst: {worst['ticker']} {c.fmt_usd(worst['pl'], 2)}" if worst else "")
+        f"{total} trades · {n_win}W / {n_loss}L  ·  "
+        f"Win streak: {mws}  ·  Loss streak: {mls}  ·  "
+        f"Total P&L: {_no_dollar(c.fmt_usd(tpl, 2))}"
+        + (f"  ·  Best: {best['ticker']} {_no_dollar(c.fmt_usd(best['pl'], 2))}" if best else "")
+        + (f"  ·  Worst: {worst['ticker']} {_no_dollar(c.fmt_usd(worst['pl'], 2))}" if worst else "")
     )
 
     # Top/bottom 3 tickers
