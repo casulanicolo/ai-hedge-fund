@@ -22,10 +22,12 @@ def render(ds, c) -> None:
     with cols[0]:
         c.kpi_card("AUM", c.fmt_usd(k.get("aum"), 0))
     with cols[1]:
-        pl     = k.get("pl_ytd")
-        pl_pct = k.get("pl_ytd_pct")
+        pl          = k.get("pl_ytd")
+        pl_pct      = k.get("pl_ytd_pct")
+        since_date  = k.get("pl_since_date")
+        label       = f"P&L since {since_date}" if since_date else "P&L YTD"
         c.kpi_card(
-            "P&L YTD",
+            label,
             c.fmt_usd(pl, 0),
             delta=c.fmt_pct(pl_pct, 2, signed=True) if pl_pct is not None else None,
             delta_color="normal" if (pl_pct or 0) >= 0 else "inverse",

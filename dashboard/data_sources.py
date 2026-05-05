@@ -145,7 +145,15 @@ def get_equity_curve(days: int = 365) -> pd.DataFrame:
             "date":   pd.to_datetime(ts, unit="s", utc=True).tz_convert(None).normalize(),
             "equity": pd.to_numeric(eq, errors="coerce"),
         }).dropna(subset=["equity"])
-        return df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
+        # Append live today point if not already present
+        today = pd.Timestamp(datetime.now().date())
+        if df.empty or df["date"].iloc[-1] < today:
+            live_aum = float(acct.get("aum", 0.0)) if (acct := get_account_snapshot()) else 0.0
+            if live_aum > 0:
+                live_row = pd.DataFrame({"date": [today], "equity": [live_aum]})
+                df = pd.concat([df, live_row], ignore_index=True)
+        return df
     except Exception as exc:
         log.warning("get_equity_curve failed: %s", exc)
         return pd.DataFrame(columns=["date", "equity"])
@@ -211,6 +219,7 @@ def get_overview_kpis() -> dict:
         "aum":              0.0,
         "pl_ytd":           0.0,
         "pl_ytd_pct":       0.0,
+        "pl_since_date":    None,
         "sharpe_1y":        None,
         "max_dd_1y":        None,
         "win_rate_20":      None,
@@ -223,14 +232,20 @@ def get_overview_kpis() -> dict:
     eq = get_equity_curve(days=365)
     if not eq.empty:
         eq_year = eq.copy()
-        # YTD: from first row of current calendar year
-        year_start = pd.Timestamp(year=datetime.now().year, month=1, day=1)
-        ytd = eq_year[(eq_year["date"] >= year_start) & (eq_year["equity"] > 0)]
-        if not ytd.empty:
-            base = float(ytd["equity"].iloc[0])
-            last = float(ytd["equity"].iloc[-1])
-            out["pl_ytd"]     = last - base
-            out["pl_ytd_pct"] = ((last / base) - 1.0) * 100.0 if base > 0 else 0.0
+        eq_nonzero = eq_year[eq_year["equity"] > 0]
+        if not eq_nonzero.empty:
+            last = float(eq_nonzero["equity"].iloc[-1])
+            inception_date = eq_nonzero["date"].iloc[0]
+            days_of_history = (eq_nonzero["date"].iloc[-1] - inception_date).days
+            if days_of_history < 365:
+                base = float(eq_nonzero["equity"].iloc[0])
+            else:
+                year_ago = eq_nonzero["date"].iloc[-1] - pd.Timedelta(days=365)
+                base_row = eq_nonzero[eq_nonzero["date"] >= year_ago]
+                base = float(base_row["equity"].iloc[0]) if not base_row.empty else float(eq_nonzero["equity"].iloc[0])
+            out["pl_ytd"]        = last - base
+            out["pl_ytd_pct"]    = ((last / base) - 1.0) * 100.0 if base > 0 else 0.0
+            out["pl_since_date"] = str(inception_date.date()) if days_of_history < 365 else str((eq_nonzero["date"].iloc[-1] - pd.Timedelta(days=365)).date())
 
         rets = eq_year["equity"].pct_change()
         out["sharpe_1y"] = _sharpe(rets)
