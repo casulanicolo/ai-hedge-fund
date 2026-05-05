@@ -225,7 +225,7 @@ def get_overview_kpis() -> dict:
         eq_year = eq.copy()
         # YTD: from first row of current calendar year
         year_start = pd.Timestamp(year=datetime.now().year, month=1, day=1)
-        ytd = eq_year[eq_year["date"] >= year_start]
+        ytd = eq_year[(eq_year["date"] >= year_start) & (eq_year["equity"] > 0)]
         if not ytd.empty:
             base = float(ytd["equity"].iloc[0])
             last = float(ytd["equity"].iloc[-1])
@@ -239,7 +239,7 @@ def get_overview_kpis() -> dict:
         # Alpha vs SPY YTD
         spy = get_benchmark("SPY", days=365)
         if not spy.empty and not ytd.empty:
-            spy_ytd = spy[spy["date"] >= year_start]
+            spy_ytd = spy[(spy["date"] >= year_start) & (spy["close"] > 0)]
             if not spy_ytd.empty:
                 spy_ret = (spy_ytd["close"].iloc[-1] / spy_ytd["close"].iloc[0] - 1.0) * 100.0
                 out["alpha_vs_spy_ytd"] = out["pl_ytd_pct"] - float(spy_ret)
