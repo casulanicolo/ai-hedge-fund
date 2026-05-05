@@ -66,7 +66,8 @@ def fmt_ratio(v: Optional[float], decimals: int = 2) -> str:
 
 
 def fmt_int(v: Optional[float]) -> str:
-    return "—" if v is None else f"{int(v):,}"
+    import math
+    return "—" if v is None or (isinstance(v, float) and math.isnan(v)) else f"{int(v):,}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
