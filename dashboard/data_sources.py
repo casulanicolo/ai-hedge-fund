@@ -447,16 +447,16 @@ _RULE_LABELS: dict[str, str] = {
 }
 
 
-def _reconcile_pending_closes() -> None:
-    """For each CLOSE in PENDING_NEW, fetch real status from Alpaca and update DB."""
+def _reconcile_pending_orders() -> None:
+    """For all non-terminal orders with a broker_order_id, fetch real status from Alpaca and update DB."""
     if not DB_PATH.exists():
         return
     try:
         with sqlite3.connect(DB_PATH) as con:
             pending = pd.read_sql_query(
-                """SELECT id, broker_order_id, ticker FROM executed_orders
-                   WHERE action = 'CLOSE' AND status = 'PENDING_NEW'
-                     AND broker_order_id IS NOT NULL""",
+                """SELECT id, broker_order_id, ticker, action FROM executed_orders
+                   WHERE broker_order_id IS NOT NULL
+                     AND status NOT IN ('FILLED','PARTIAL_FILLED','REJECTED','CANCELLED','EXPIRED')""",
                 con,
             )
         if pending.empty:
@@ -494,7 +494,7 @@ def _reconcile_pending_closes() -> None:
             except Exception as exc:
                 log.warning("reconcile order %s failed: %s", row.get("broker_order_id"), exc)
     except Exception as exc:
-        log.warning("_reconcile_pending_closes failed: %s", exc)
+        log.warning("_reconcile_pending_orders failed: %s", exc)
 
 
 @st.cache_data(ttl=TTL_DISK, show_spinner=False)
@@ -503,7 +503,7 @@ def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
     _COLS = ["ticker","entry_date","exit_date","pl","pl_pct","quantity",
              "entry_price","exit_price","side","close_reason","stop_loss","take_profit","top_agents"]
     try:
-        _reconcile_pending_closes()
+        _reconcile_pending_orders()
 
         df = _sql(
             """
