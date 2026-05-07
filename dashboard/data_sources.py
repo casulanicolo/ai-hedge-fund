@@ -253,10 +253,11 @@ def get_overview_kpis() -> dict:
 
         # Alpha vs SPY YTD
         spy = get_benchmark("SPY", days=365)
-        if not spy.empty and not ytd.empty:
-            spy_ytd = spy[(spy["date"] >= year_start) & (spy["close"] > 0)]
-            if not spy_ytd.empty:
-                spy_ret = (spy_ytd["close"].iloc[-1] / spy_ytd["close"].iloc[0] - 1.0) * 100.0
+        if not spy.empty and not eq_nonzero.empty:
+            inception_date = eq_nonzero["date"].iloc[0]
+            spy_since = spy[(spy["date"] >= inception_date) & (spy["close"] > 0)]
+            if not spy_since.empty:
+                spy_ret = (spy_since["close"].iloc[-1] / spy_since["close"].iloc[0] - 1.0) * 100.0
                 out["alpha_vs_spy_ytd"] = out["pl_ytd_pct"] - float(spy_ret)
 
     # Win rate (realized PnL) — last 20 closed trades from executed_orders
