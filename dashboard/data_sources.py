@@ -582,10 +582,16 @@ def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
                 o2.broker_order_id AS close_order_id
             FROM executed_orders o1
             LEFT JOIN executed_orders o2
-                ON  o2.ticker = o1.ticker
-                AND o2.action IN ('CLOSE','SELL','EXIT')
-                AND o2.status IN ('FILLED','PARTIAL_FILLED')
-                AND datetime(o2.filled_at) > datetime(o1.filled_at)
+                ON o2.broker_order_id = (
+                    SELECT broker_order_id
+                    FROM executed_orders
+                    WHERE ticker = o1.ticker
+                      AND action IN ('CLOSE','SELL','EXIT','FULL_EXIT','SCALE_OUT')
+                      AND status IN ('FILLED','PARTIAL_FILLED')
+                      AND datetime(filled_at) > datetime(o1.filled_at)
+                    ORDER BY filled_at ASC
+                    LIMIT 1
+                )
             WHERE o1.action IN ('OPEN_LONG','OPEN_SHORT')
               AND o1.status IN ('FILLED','PARTIAL_FILLED')
               AND datetime(o1.filled_at) >= datetime('now', '-{days} day')
