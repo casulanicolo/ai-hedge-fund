@@ -14,6 +14,7 @@ import argparse
 import os
 import re
 import smtplib
+import subprocess
 import sys
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -153,6 +154,18 @@ def main() -> None:
     if silence_min < SILENCE_THRESH:
         print(f"[heartbeat] OK — entro soglia {SILENCE_THRESH}min.")
         return
+
+    # Check systemd before alerting: daemon may be alive but idle (no positions)
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "athanor-monitor"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("[heartbeat] Daemon silenzioso ma systemd active — no alert.")
+            return
+    except FileNotFoundError:
+        pass  # systemctl not available (Windows dev machine)
 
     if _already_alerted_today() and not args.dry_run:
         print("[heartbeat] Alert già inviato oggi — nessun duplicato.")
