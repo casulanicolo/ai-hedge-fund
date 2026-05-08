@@ -557,6 +557,97 @@ def _reconcile_pending_orders() -> None:
     except Exception as exc:
         log.warning("_reconcile_pending_orders failed: %s", exc)
 
+    # ── Step 2: import Alpaca-side conditional fills (SL/TP) not yet in DB ──
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+
+        broker = get_broker()
+        if broker is None or not hasattr(broker, "_client"):
+            return
+
+        after = datetime.now(timezone.utc) - timedelta(days=7)
+        alpaca_orders = broker._client.get_orders(
+            filter=GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500, after=after)
+        )
+
+        def _norm_status(s) -> str:
+            if hasattr(s, "name"):
+                return s.name.upper()
+            return str(s).split(".")[-1].upper()
+
+        with sqlite3.connect(DB_PATH) as con:
+            known_ids = {
+                r[0]
+                for r in con.execute(
+                    "SELECT broker_order_id FROM executed_orders WHERE broker_order_id IS NOT NULL"
+                ).fetchall()
+            }
+            # ensure alpaca-sync run_id exists
+            con.execute(
+                "INSERT OR IGNORE INTO pipeline_runs (run_id, started_at, status, tickers)"
+                " VALUES ('alpaca-sync', ?, 'completed', '[]')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            con.commit()
+
+            for o in alpaca_orders:
+                oid = str(o.id)
+                if oid in known_ids:
+                    continue
+                status = _norm_status(o.status)
+                if status != "FILLED":
+                    continue
+                fill_price = float(o.filled_avg_price) if getattr(o, "filled_avg_price", None) else None
+                if not fill_price:
+                    continue
+                side_str = str(getattr(o, "side", "")).split(".")[-1].lower()
+                # sell closes a long; buy closes a short
+                if side_str == "sell":
+                    open_action = "OPEN_LONG"
+                elif side_str == "buy":
+                    open_action = "OPEN_SHORT"
+                else:
+                    continue
+                ticker = o.symbol
+                filled_at_str = o.filled_at.isoformat() if getattr(o, "filled_at", None) else None
+                filled_qty = float(o.filled_qty) if getattr(o, "filled_qty", None) else None
+                submitted_at_str = (
+                    o.submitted_at.isoformat() if getattr(o, "submitted_at", None)
+                    else datetime.now(timezone.utc).isoformat()
+                )
+
+                open_row = con.execute(
+                    """SELECT run_id, stop_loss, take_profit FROM executed_orders
+                       WHERE ticker = ? AND action = ? AND status = 'FILLED'
+                       ORDER BY filled_at DESC LIMIT 1""",
+                    (ticker, open_action),
+                ).fetchone()
+                if open_row is None:
+                    continue
+                run_id   = open_row[0] or "alpaca-sync"
+                stop_loss   = open_row[1]
+                take_profit = open_row[2]
+
+                con.execute(
+                    """INSERT OR IGNORE INTO executed_orders
+                           (run_id, broker_order_id, ticker, action,
+                            quantity, notional_usd, fill_price,
+                            stop_loss, take_profit, status,
+                            submitted_at, filled_at,
+                            rejection_reason, raw_alpaca_response)
+                       VALUES (?, ?, ?, 'CLOSE', ?, NULL, ?, ?, ?, 'FILLED', ?, ?, NULL, '{}')""",
+                    (run_id, oid, ticker,
+                     int(filled_qty) if filled_qty else None,
+                     fill_price, stop_loss, take_profit,
+                     submitted_at_str, filled_at_str),
+                )
+                con.commit()
+                log.info("[reconcile] imported conditional close %s %s broker=%s fill=%.4f",
+                         open_action.replace("OPEN_", ""), ticker, oid[:8], fill_price)
+    except Exception as exc:
+        log.warning("_reconcile_pending_orders step2 failed: %s", exc)
+
 
 @st.cache_data(ttl=TTL_DISK, show_spinner=False)
 def get_trade_history_alpaca(days: int = 30) -> pd.DataFrame:
