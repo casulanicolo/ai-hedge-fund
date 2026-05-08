@@ -26,7 +26,8 @@ from src.risk.kill_switch import is_armed as _ks_is_armed
 logger = logging.getLogger(__name__)
 
 _OPEN_ACTIONS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}
-_MAX_ACTIVE_TRADES = int(os.getenv("MAX_ACTIVE_TRADES", "3"))
+_MAX_ACTIVE_TRADES = int(os.getenv("MAX_ACTIVE_TRADES", "9"))  # FIX: limite assoluto ora 9, capital-aware
+_MIN_CASH_COVERAGE = 0.50   # FIX: cash minimo = 50% del notional ordine
 _MAX_NOTIONAL_PCT  = 0.25   # 25% of equity per order
 _MAX_TICKER_PCT    = 0.20   # 20% concentration per ticker
 _MIN_CASH_PCT      = 0.10   # 10% cash buffer
@@ -37,6 +38,7 @@ class ComplianceResult:
     check_id: str
     passed: bool
     reason: str
+    needs_rebalance: bool = False  # FIX: flag per CC4 capital-aware
 
 
 def all_passed(results: list[ComplianceResult]) -> bool:
@@ -69,13 +71,15 @@ def _cc3_max_notional(order, adapter) -> ComplianceResult:
     if notional <= 0 and order.quantity and adapter:
         try:
             account = adapter.get_account()
-            equity = float(account.equity)
+            _pv = float(account.portfolio_value)  # FIX: portfolio_value sostituisce .equity (non esiste su AccountSnapshot)
+            equity = _pv if _pv > 0 else float(account.last_equity)
         except Exception:
             return ComplianceResult("CC3", True, "Equity fetch failed — skipped")
     elif adapter:
         try:
             account = adapter.get_account()
-            equity = float(account.equity)
+            _pv = float(account.portfolio_value)  # FIX: portfolio_value sostituisce .equity
+            equity = _pv if _pv > 0 else float(account.last_equity)
         except Exception:
             return ComplianceResult("CC3", True, "Equity fetch failed — skipped")
     else:
@@ -90,13 +94,33 @@ def _cc3_max_notional(order, adapter) -> ComplianceResult:
     return ComplianceResult("CC3", True, f"Notional {pct:.1%} of equity OK")
 
 
-def _cc4_max_positions(order, open_positions: list) -> ComplianceResult:
+def _cc4_max_positions(order, open_positions: list, adapter=None) -> ComplianceResult:  # FIX: aggiunto adapter per capital-aware check
     if order.action not in _OPEN_ACTIONS:
         return ComplianceResult("CC4", True, "Not an OPEN action")
     n = len(open_positions)
     if n >= _MAX_ACTIVE_TRADES:
         return ComplianceResult("CC4", False,
             f"Open positions={n} >= MAX_ACTIVE_TRADES={_MAX_ACTIVE_TRADES} — no new opens")
+    # FIX: capital-aware — verifica che il cash copra almeno 50% del notional
+    if adapter is not None:
+        notional = float(order.notional_usd or 0.0)
+        if notional > 0:
+            try:
+                account  = adapter.get_account()
+                cash     = float(getattr(account, "cash", 0) or getattr(account, "buying_power", 0) or 0)
+                required = notional * _MIN_CASH_COVERAGE
+                if cash < required:
+                    logger.warning(
+                        "[CC4] %s: cash=%.0f < %.0f (50%% of notional=%.0f) — needs rebalance",
+                        order.ticker, cash, required, notional,
+                    )
+                    return ComplianceResult(
+                        "CC4", False,
+                        f"Cash ${cash:,.0f} < ${required:,.0f} (50% of notional=${notional:,.0f}) — capital insufficiente",
+                        needs_rebalance=True,
+                    )
+            except Exception as exc:
+                logger.warning("[CC4] cash check error: %s", exc)
     return ComplianceResult("CC4", True, f"Positions={n} < {_MAX_ACTIVE_TRADES} OK")
 
 
@@ -107,7 +131,8 @@ def _cc5_concentration(order, open_positions: list, adapter) -> ComplianceResult
         return ComplianceResult("CC5", True, "No positions or no adapter — skipped")
     try:
         account = adapter.get_account()
-        portfolio_val = float(account.equity)
+        _pv = float(account.portfolio_value)  # FIX: portfolio_value sostituisce .equity
+        portfolio_val = _pv if _pv > 0 else float(account.last_equity)
         if portfolio_val <= 0:
             return ComplianceResult("CC5", True, "portfolio=0 — skipped")
         ticker_val = sum(
@@ -133,7 +158,8 @@ def _cc6_cash_buffer(order, adapter) -> ComplianceResult:
     try:
         account = adapter.get_account()
         cash   = float(getattr(account, "cash", 0) or 0)
-        equity = float(account.equity)
+        _pv = float(account.portfolio_value)  # FIX: portfolio_value sostituisce .equity
+        equity = _pv if _pv > 0 else float(account.last_equity)
         if equity <= 0:
             return ComplianceResult("CC6", True, "equity=0 — skipped")
         ratio = cash / equity
@@ -162,7 +188,7 @@ def run_all(
         _cc1_kill_switch(order),
         _cc2_circuit_breakers(order),
         _cc3_max_notional(order, adapter),
-        _cc4_max_positions(order, open_positions),
+        _cc4_max_positions(order, open_positions, adapter),  # FIX: passa adapter per capital-aware check
         _cc5_concentration(order, open_positions, adapter),
         _cc6_cash_buffer(order, adapter),
     ]

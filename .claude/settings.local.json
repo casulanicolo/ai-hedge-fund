@@ -51,7 +51,9 @@
       "Bash(ssh -i *)",
       "Bash(cat)",
       "Bash(scp -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" /tmp/check_db_remote.py ubuntu@129.159.206.74:/tmp/check_db.py)",
-      "Bash(scp -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" \"c:\\\\Users\\\\tomma\\\\Documents\\\\athanor-alpha\\\\src\\\\execution\\\\executor.py\" ubuntu@129.159.206.74:/home/ubuntu/ai-hedge-fund/src/execution/executor.py)"
+      "Bash(scp -i \"C:\\\\Users\\\\tomma\\\\.ssh\\\\ssh-key-2026-03-30.key\" \"c:\\\\Users\\\\tomma\\\\Documents\\\\athanor-alpha\\\\src\\\\execution\\\\executor.py\" ubuntu@129.159.206.74:/home/ubuntu/ai-hedge-fund/src/execution/executor.py)",
+      "PowerShell(Test-Path \"$env:USERPROFILE/ai-hedge-fund/.env\")",
+      "Bash(ls -la ~/ | grep -E \"^d\")"
     ]
   }
 }

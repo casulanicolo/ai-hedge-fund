@@ -267,6 +267,15 @@ def _execute_decision(
         return result.success, result.broker_order_id
 
     if decision.action in ("FULL_EXIT", "PARTIAL_EXIT"):
+        # FIX: Guard — salta exit se posizione già chiusa sul broker (previene LLY zombie)
+        try:
+            live_positions = adapter.get_positions()
+            live_tickers = {p.ticker for p in live_positions}
+            if pos.ticker not in live_tickers:
+                log.warning("[daemon] %s: position already closed on broker — skipping exit", pos.ticker)
+                return False, None
+        except Exception:
+            pass  # se non riusciamo a verificare, procediamo normalmente
         qty = int(abs(pos.qty))
         if decision.action == "PARTIAL_EXIT" and decision.percentage:
             qty = max(1, _floor(abs(pos.qty) * decision.percentage))

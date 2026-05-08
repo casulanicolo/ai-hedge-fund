@@ -54,6 +54,7 @@ WC_THRESHOLD            = 0.008   # Weighted Conviction minima per entrare (0.8%
 PORTFOLIO_SIZE_USD = float(os.getenv("PORTFOLIO_SIZE_USD", "10000"))
 RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.005"))
 MAX_ACTIVE_TRADES  = int(os.getenv("MAX_ACTIVE_TRADES", "3"))
+ENABLE_REBALANCE   = os.getenv("ENABLE_REBALANCE", "false").lower() == "true"  # FIX: rebalancing capital-aware (default off)
 
 NON_SIGNAL_AGENTS = {"risk_manager", "data_prefetch"}
 
@@ -1219,6 +1220,93 @@ def _write_run_log(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FIX: Rebalancing layer — libera cash tramite PARTIAL_EXIT se insufficiente
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _rebalance_for_new_buys(
+    trade_orders: "list[TradeOrder]",
+    open_positions: list,
+    adapter,
+    run_id: str,
+    weighted: dict,
+) -> "list[TradeOrder]":
+    """
+    Se cash disponibile < somma notional nuovi BUY, propone PARTIAL_EXIT (50%)
+    sulle posizioni con weighted_conviction più bassa fino a liberare abbastanza cash.
+    Attivo solo se ENABLE_REBALANCE=true.
+    """
+    if not ENABLE_REBALANCE:
+        return trade_orders
+
+    try:
+        account = adapter.get_account()
+        _pv     = float(account.portfolio_value)
+        available_cash = float(getattr(account, "cash", 0) or 0)
+    except Exception as exc:
+        logger.warning("[rebalance] get_account failed: %s", exc)
+        return trade_orders
+
+    new_buys = [o for o in trade_orders if o.action in ("OPEN_LONG", "OPEN_SHORT") and o.notional_usd]
+    total_new_notional = sum(float(o.notional_usd) for o in new_buys)
+
+    if total_new_notional == 0 or available_cash >= total_new_notional:
+        return trade_orders
+
+    cash_gap = total_new_notional - available_cash
+    logger.info(
+        "[rebalance] cash=%.0f < total_new_notional=%.0f → cash_gap=%.0f",
+        available_cash, total_new_notional, cash_gap,
+    )
+
+    # Ordina posizioni aperte per weighted_conviction crescente (esci prima da quelle con meno conviction)
+    conviction_map = {t: agg.get("weighted_conviction", 0.0) for t, agg in weighted.items()}
+    sortable = []
+    for pos in open_positions:
+        t    = pos["ticker"]
+        conv = conviction_map.get(t, 0.5)
+        size = float(pos.get("size_usd", 0))
+        sortable.append((conv, t, pos, size))
+    sortable.sort(key=lambda x: x[0])
+
+    freed = 0.0
+    ts    = datetime.now(timezone.utc)
+    extra_orders: list = []
+
+    for conv, ticker, pos, pos_size in sortable:
+        if freed >= cash_gap or pos_size <= 0:
+            continue
+        exit_amount = round(pos_size * 0.50, 0)
+        freed += exit_amount
+        logger.info(
+            "[rebalance] Partial exit %s 50%% to free $%.0f for new positions",
+            ticker, exit_amount,
+        )
+        extra_orders.append(TradeOrder(
+            ticker=ticker,
+            action="SCALE_OUT",
+            quantity=None,
+            notional_usd=exit_amount,
+            order_type="MARKET",
+            limit_price=None,
+            stop_loss=None,
+            take_profit=None,
+            time_in_force="DAY",
+            conviction=conv,
+            weighted_conviction=conv,
+            regime_at_decision="CAUTION",
+            reasoning=f"[rebalance] Partial exit 50% to free ${exit_amount:,.0f} for new positions",
+            agent_contributions={},
+            created_at=ts,
+            run_id=run_id,
+        ))
+
+    if extra_orders:
+        logger.info("[rebalance] Added %d partial exits freeing ~$%.0f", len(extra_orders), freed)
+
+    return trade_orders + extra_orders
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Main agent node
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1426,6 +1514,18 @@ def portfolio_manager_agent(state: AgentState) -> dict:
     # 5b. Build structured TradeOrders (Fase 4 – Alpaca prerequisite)
     _run_id = data.get("run_id") or state.get("metadata", {}).get("run_id", "unknown")
     trade_orders = _build_trade_orders(pre_recs, macro_regime_detected, _run_id, state, effective_portfolio_usd)
+
+    # FIX: rebalancing layer — aggiunge PARTIAL_EXIT se cash insufficiente per nuovi BUY
+    if ENABLE_REBALANCE:
+        try:
+            from src.execution.alpaca_adapter import AlpacaBrokerAdapter
+            _rb_adapter = AlpacaBrokerAdapter()
+            trade_orders = _rebalance_for_new_buys(
+                trade_orders, open_positions, _rb_adapter, _run_id, weighted,
+            )
+        except Exception as _rb_exc:
+            logger.warning("[rebalance] _rebalance_for_new_buys failed: %s", _rb_exc)
+
     data["trade_orders"] = trade_orders
 
     progress.update_status(AGENT_ID, None, f"Built {len(trade_orders)} TradeOrders")
