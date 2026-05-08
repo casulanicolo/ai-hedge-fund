@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _OPEN_ACTIONS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}
 _MAX_ACTIVE_TRADES = int(os.getenv("MAX_ACTIVE_TRADES", "9"))  # FIX: limite assoluto ora 9, capital-aware
 _MIN_CASH_COVERAGE = 0.50   # FIX: cash minimo = 50% del notional ordine
-_MAX_NOTIONAL_PCT  = 0.25   # 25% of equity per order
+_MAX_NOTIONAL_PCT  = 0.35   # 35% of buying_power per order
 _MAX_TICKER_PCT    = 0.20   # 20% concentration per ticker
 _MIN_CASH_PCT      = 0.10   # 10% cash buffer
 
@@ -71,15 +71,15 @@ def _cc3_max_notional(order, adapter) -> ComplianceResult:
     if notional <= 0 and order.quantity and adapter:
         try:
             account = adapter.get_account()
-            _pv = float(account.portfolio_value)  # FIX: portfolio_value sostituisce .equity (non esiste su AccountSnapshot)
-            equity = _pv if _pv > 0 else float(account.last_equity)
+            _bp = float(account.buying_power)
+            equity = _bp if _bp > 0 else float(account.portfolio_value)
         except Exception:
             return ComplianceResult("CC3", True, "Equity fetch failed — skipped")
     elif adapter:
         try:
             account = adapter.get_account()
-            _pv = float(account.portfolio_value)  # FIX: portfolio_value sostituisce .equity
-            equity = _pv if _pv > 0 else float(account.last_equity)
+            _bp = float(account.buying_power)
+            equity = _bp if _bp > 0 else float(account.portfolio_value)
         except Exception:
             return ComplianceResult("CC3", True, "Equity fetch failed — skipped")
     else:
